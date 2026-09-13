@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tweet.app Enhancer
 // @namespace    https://imgd.net/
-// @version      1.2
+// @version      1.4
 // @description  Font size, content width, always-visible composer, video/GIF autoplay, OGP link cards, compose translation, swipe photo gallery, and reply @handle prefill for app.tweet.app — all configurable from the Settings page.
 // @match        https://app.tweet.app/*
 // @grant        GM_getValue
@@ -279,6 +279,7 @@
     const fontSize = fontSizeSetting.get();
     const mediaPct = mediaPctSetting.get();
     const composerVisible = composerVisibleSetting.get();
+    const onSettingsPage = location.pathname.startsWith('/settings');
 
     styleEl.textContent = `
       /* ツイート本文のフォントサイズ */
@@ -298,13 +299,15 @@
         line-height: 1.5 !important;
       }
 
-      /* 画像・動画・リンクカードの表示幅(記事内・News/Sportsタブのリンクカード両方に適用) */
+      /* 画像・動画・リンクカードの表示幅(記事内・News/Sportsタブのリンクカードに適用)。
+         /settings ページはカードUIが同じクラスを使い回しているため対象外にする */
+      ${onSettingsPage ? '' : `
       div.rounded-2xl.overflow-hidden,
       div.${CONFIG.linkCard.className} {
         width: ${mediaPct}% !important;
         margin-left: auto !important;
         margin-right: auto !important;
-      }
+      }`}
 
       /* 常時表示の投稿欄（フィード最上部のみ） */
       ${composerVisible ? '' : `
@@ -1299,18 +1302,23 @@
     injectSettingsSection();
   }
 
+  function handleRouteChange() {
+    applyStyles();
+    injectSettingsSection();
+  }
+
   function watchRouteChanges() {
     const origPushState = history.pushState;
     const origReplaceState = history.replaceState;
     history.pushState = function (...args) {
       origPushState.apply(this, args);
-      setTimeout(injectSettingsSection, 50);
+      setTimeout(handleRouteChange, 50);
     };
     history.replaceState = function (...args) {
       origReplaceState.apply(this, args);
-      setTimeout(injectSettingsSection, 50);
+      setTimeout(handleRouteChange, 50);
     };
-    window.addEventListener('popstate', () => setTimeout(injectSettingsSection, 50));
+    window.addEventListener('popstate', () => setTimeout(handleRouteChange, 50));
   }
 
   function startObserving() {
