@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tweet.app Enhancer
 // @namespace    https://imgd.net/
-// @version      1.0
+// @version      1.2
 // @description  Font size, content width, always-visible composer, video/GIF autoplay, OGP link cards, compose translation, swipe photo gallery, and reply @handle prefill for app.tweet.app — all configurable from the Settings page.
 // @match        https://app.tweet.app/*
 // @grant        GM_getValue
@@ -38,7 +38,7 @@
     },
     linkCard: {
       enabledKey: 'tweetapp_linkcard_enabled',
-      enabledDefault: true,
+      enabledDefault: false,
       className: 'ogp-link-card',
       cacheKey: 'tweetapp_ogp_cache_v1',
       cacheMaxEntries: 300,
@@ -57,16 +57,18 @@
     },
     replyPrefill: {
       enabledKey: 'tweetapp_reply_prefill_enabled',
-      enabledDefault: true,
+      enabledDefault: false,
     },
     gallery: {
       enabledKey: 'tweetapp_gallery_enabled',
-      enabledDefault: true,
+      enabledDefault: false,
     },
     translate: {
       key: 'tweetapp_compose_translate_lang',
       default: 'en',
+      noneValue: 'none',
       langs: [
+        ['none', 'None (hide button)'],
         ['ja', '日本語'],
         ['en', 'English'],
         ['zh-CN', '中文(簡体)'],
@@ -75,6 +77,7 @@
         ['es', 'Español'],
         ['fr', 'Français'],
         ['de', 'Deutsch'],
+        ['it', 'Italiano'],
       ],
       composeSelector: 'textarea[placeholder*="happening" i], [contenteditable="true"][aria-label*="happening" i], [contenteditable="true"][aria-placeholder*="happening" i]',
     },
@@ -295,9 +298,9 @@
         line-height: 1.5 !important;
       }
 
-      /* 画像・動画・リンクカードの表示幅 */
-      article div.rounded-2xl.overflow-hidden,
-      article div.${CONFIG.linkCard.className} {
+      /* 画像・動画・リンクカードの表示幅(記事内・News/Sportsタブのリンクカード両方に適用) */
+      div.rounded-2xl.overflow-hidden,
+      div.${CONFIG.linkCard.className} {
         width: ${mediaPct}% !important;
         margin-left: auto !important;
         margin-right: auto !important;
@@ -889,6 +892,11 @@
 
   function updateComposeBtnLabel(btn) {
     const lang = translateLangSetting.get();
+    if (lang === CONFIG.translate.noneValue) {
+      btn.style.display = 'none';
+      return;
+    }
+    btn.style.display = '';
     if (btn.dataset.ttState === 'loading') {
       btn.textContent = `🌐 Translating... (${lang})`;
     } else {
@@ -939,6 +947,8 @@
       btn.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
+
+        if (translateLangSetting.get() === CONFIG.translate.noneValue) return;
 
         const text = getComposeText(el).trim();
         if (!text) return;
