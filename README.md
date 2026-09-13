@@ -5,6 +5,7 @@
 An enhancement for [app.tweet.app](https://app.tweet.app) that adds font size / content width adjustment, link preview cards, an always-visible composer, compose-time translation, a swipeable multi-photo gallery, and automatic `@handle` prefill for inline replies. All features are toggled from the app's own `/settings` page.
 
 配布形態は3種類あり、機能・設定項目・デフォルト値は完全に同一です。
+
 Three distribution formats are available, with identical features, settings, and defaults.
 
 | | userscript版 | Chrome拡張版(アイコンあり) | Chrome拡張版(アイコンなし) |
