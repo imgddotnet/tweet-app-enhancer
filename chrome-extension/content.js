@@ -548,9 +548,11 @@
   }
 
   // 入力欄は裏側のミラー要素も揃えないと文字とカーソル位置がずれる
+  // collectMatchingではなくquerySelectorAllを使う: rootがtextarea自身の場合に
+  // parentElement全体をstyle書き換えしてReactのvalue状態を乱すのを防ぐため
   function applyFontSizeToComposers(root = document) {
     const fontSize = fontSizeSetting.get();
-    collectMatching(root, CONFIG.composer.textareaSelector).forEach((textarea) => {
+    root.querySelectorAll?.(CONFIG.composer.textareaSelector).forEach((textarea) => {
       setFontStyle(textarea, fontSize);
       textarea.parentElement?.querySelectorAll('*').forEach((el) => setFontStyle(el, fontSize));
     });
@@ -915,6 +917,7 @@
 
   function playNotificationSound() {
     try {
+      ensureAudioCtx(); // suspendedを毎回チェックして確実にresume
       const sound = notificationSoundSetting.get();
       SOUND_PLAYERS[sound]?.();
     } catch (e) {
@@ -1471,26 +1474,55 @@
   // インラインリプライ欄への@ハンドル自動入力
   // ============================================================
 
-  function extractHandleFromArticle(article) {
-    // article直下の投稿者ボタンのみ対象(ネスト返信は除外)
-    const btn = article.querySelector(':scope > div.flex.items-start.gap-3 > button[aria-label^="View @"]');
-    const label = btn?.getAttribute('aria-label') || '';
-    const match = label.match(/^View @(.+?)'s profile$/);
+  // aria-labelからハンドルを抽出するユーティリティ
+  function extractHandleFromLabel(label) {
+    const match = label.match(/^View @(.+?)(?:'s|'s) profile$/);
     return match ? match[1] : null;
+  }
+
+  // textareaに対応するツイート投稿者ハンドルを取得する。
+  // インラインリプライ欄はarticle外(div[role="form"])に置かれるケースがあるため、
+  // 複数の経路で投稿者ボタンを探す。
+  function findHandleForTextarea(textarea) {
+    // 経路1: textarea が article 内にある場合 (旧来の構造)
+    const article = textarea.closest('article');
+    if (article) {
+      const btn = article.querySelector(':scope > div.flex.items-start.gap-3 > button[aria-label^="View @"]');
+      const handle = extractHandleFromLabel(btn?.getAttribute('aria-label') || '');
+      if (handle) return handle;
+    }
+
+    // 経路2: textarea が div[role="form"] 内にあり、その祖先に投稿者ボタンがある場合
+    // (引用ツイートへのインラインリプライ等)
+    const form = textarea.closest('[role="form"]');
+    if (form) {
+      // form の祖先を遡りながら "View @" ボタンを探す
+      let el = form.parentElement;
+      while (el && el !== document.body) {
+        const btn = el.querySelector('button[aria-label^="View @"]');
+        if (btn) {
+          const handle = extractHandleFromLabel(btn.getAttribute('aria-label') || '');
+          if (handle) return handle;
+        }
+        el = el.parentElement;
+      }
+    }
+
+    return null;
   }
 
   function prefillInlineReplyHandles(root = document) {
     if (!replyPrefillEnabledSetting.get()) return;
 
-    const textareas = collectMatching(root, 'textarea[name="compose-text"]');
+    const textareas =
+      root instanceof HTMLTextAreaElement && root.name === 'compose-text'
+        ? [root]
+        : Array.from(root.querySelectorAll?.('textarea[name="compose-text"]') || []);
 
     textareas.forEach((textarea) => {
       if (textarea.dataset.ttPrefillDone) return;
 
-      const article = textarea.closest('article');
-      if (!article) return;
-
-      const handle = extractHandleFromArticle(article);
+      const handle = findHandleForTextarea(textarea);
       if (!handle) return;
 
       textarea.dataset.ttPrefillDone = '1';
@@ -1502,8 +1534,6 @@
       ).set;
       nativeSetter.call(textarea, `@${handle} `);
       textarea.dispatchEvent(new Event('input', { bubbles: true }));
-
-      // カーソルを末尾に
       textarea.setSelectionRange(textarea.value.length, textarea.value.length);
     });
   }
