@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tweet.app Enhancer
 // @namespace    https://imgd.net/
-// @version      1.4
+// @version      1.5.1
 // @description  Font size, content width, always-visible composer, video/GIF autoplay, OGP link cards, compose translation, swipe photo gallery, and reply @handle prefill for app.tweet.app — all configurable from the Settings page.
 // @match        https://app.tweet.app/*
 // @grant        GM_getValue
@@ -53,7 +53,6 @@
     autoplay: {
       enabledKey: 'tweetapp_autoplay_enabled',
       enabledDefault: true,
-      manualPlayGraceMs: 1500,
     },
     replyPrefill: {
       enabledKey: 'tweetapp_reply_prefill_enabled',
@@ -62,6 +61,15 @@
     gallery: {
       enabledKey: 'tweetapp_gallery_enabled',
       enabledDefault: false,
+    },
+    notificationToast: {
+      enabledKey: 'tweetapp_notification_toast_enabled',
+      enabledDefault: false,
+      pollIntervalMs: 3000,
+      displayMs: 4000,
+      soundKey: 'tweetapp_notification_sound',
+      soundDefault: 'chime',
+      sounds: ['none', 'chime', 'drop', 'marimba', 'bell'],
     },
     translate: {
       key: 'tweetapp_compose_translate_lang',
@@ -87,6 +95,12 @@
   // Settings
   // ============================================================
 
+  // root自身がセレクタに一致する場合も含めて要素を収集する
+  function collectMatching(root, selector) {
+    const matches = root instanceof Element && root.matches?.(selector) ? [root] : [];
+    return matches.concat(Array.from(root.querySelectorAll?.(selector) || []));
+  }
+
   function createSetting(key, defaultValue, onChange) {
     return {
       get: () => GM_getValue(key, defaultValue),
@@ -106,42 +120,42 @@
     if (enabled) document.querySelectorAll('article').forEach(processArticle);
     else removeAllLinkCards();
   });
-  const autoplayEnabledSetting = createSetting(CONFIG.autoplay.enabledKey, CONFIG.autoplay.enabledDefault, () => applyAutoplaySetting());
+  const autoplayEnabledSetting = createSetting(CONFIG.autoplay.enabledKey, CONFIG.autoplay.enabledDefault, () => applyAutoplaySetting(document, true));
   const translateLangSetting = createSetting(CONFIG.translate.key, CONFIG.translate.default, () => refreshAllTranslateBtnLabels());
   const replyPrefillEnabledSetting = createSetting(CONFIG.replyPrefill.enabledKey, CONFIG.replyPrefill.enabledDefault, () => {});
   const galleryEnabledSetting = createSetting(CONFIG.gallery.enabledKey, CONFIG.gallery.enabledDefault, () => {});
+  const notificationToastEnabledSetting = createSetting(CONFIG.notificationToast.enabledKey, CONFIG.notificationToast.enabledDefault, () => {});
+  const notificationSoundSetting = createSetting(CONFIG.notificationToast.soundKey, CONFIG.notificationToast.soundDefault, () => {});
 
   // ============================================================
   // 動画・GIF自動再生制御
   // ============================================================
+  // 挿入時にautoplay属性を外してpauseし、OFF中はplayイベントも監視して止める。
+  // ただし動画への直接操作を検知したらユーザー管理下として以後は触れない（WeakSet）。
+  // 制約: ネイティブコントロール経由の操作がvideoまで伝播しない環境では手動再生も止まる。
 
-  const manualPlayUntil = new WeakMap();
+  const userTouchedVideos = new WeakSet();
 
   function isTrackedVideo(node) {
     return node instanceof HTMLVideoElement && !!node.closest('article');
   }
 
-  function getVideoFromEventTarget(target) {
-    if (!(target instanceof Element)) return null;
-    const video = target.closest('article video');
-    return video instanceof HTMLVideoElement ? video : null;
+  function markVideoAsUserTouched(event) {
+    userTouchedVideos.add(event.currentTarget);
   }
 
-  function markManualVideoGesture(event) {
-    const video = getVideoFromEventTarget(event.target);
-    if (!video) return;
-    manualPlayUntil.set(video, Date.now() + CONFIG.autoplay.manualPlayGraceMs);
+  function bindVideoGestureListeners(video) {
+    if (video.dataset.ttGestureBound) return;
+    video.dataset.ttGestureBound = '1';
+    ['pointerdown', 'mousedown', 'touchstart', 'click', 'keydown'].forEach((type) => {
+      video.addEventListener(type, markVideoAsUserTouched, true);
+    });
   }
 
-  function isManualVideoPlay(video) {
-    const until = manualPlayUntil.get(video) || 0;
-    if (until > Date.now()) return true;
-    manualPlayUntil.delete(video);
-    return false;
-  }
-
-  function stopVideo(video) {
+  function stopVideo(video, force = false) {
     if (!(video instanceof HTMLVideoElement)) return;
+    bindVideoGestureListeners(video);
+    if (!force && userTouchedVideos.has(video)) return; // ユーザー管理下の動画には触れない
     video.autoplay = false;
     video.removeAttribute('autoplay');
     video.pause();
@@ -149,62 +163,48 @@
 
   function startVideo(video) {
     if (!(video instanceof HTMLVideoElement)) return;
+    bindVideoGestureListeners(video);
     video.autoplay = true;
     if (!video.hasAttribute('autoplay')) video.setAttribute('autoplay', '');
     video.muted = true;
     if (video.paused) video.play().catch(() => {});
   }
 
-  function applyAutoplayToVideo(video) {
+  function applyAutoplayToVideo(video, force = false) {
     if (!isTrackedVideo(video)) return;
     if (autoplayEnabledSetting.get()) startVideo(video);
-    else stopVideo(video);
+    else stopVideo(video, force);
   }
 
-  function applyAutoplaySetting(root = document) {
+  function applyAutoplaySetting(root = document, force = false) {
     const enabled = autoplayEnabledSetting.get();
-    const videos = [];
-
-    if (root instanceof HTMLVideoElement) {
-      videos.push(root);
-    } else {
-      root.querySelectorAll?.('article video').forEach((video) => videos.push(video));
-    }
+    const videos = collectMatching(root, 'article video');
 
     videos.forEach((video) => {
-      if (!(video instanceof HTMLVideoElement)) return;
       if (enabled) startVideo(video);
-      else stopVideo(video);
+      else stopVideo(video, force);
     });
   }
 
-  document.addEventListener('pointerdown', markManualVideoGesture, true);
-  document.addEventListener('touchstart', markManualVideoGesture, true);
-  document.addEventListener('mousedown', markManualVideoGesture, true);
-  document.addEventListener('keydown', markManualVideoGesture, true);
+  // 属性ベースの抑止では防げない、JS経由の自動再生に対応
+  document.addEventListener(
+    'play',
+    (event) => {
+      const video = event.target;
+      if (!isTrackedVideo(video)) return;
+      if (autoplayEnabledSetting.get()) return;
+      if (userTouchedVideos.has(video)) return;
 
-  document.addEventListener('play', (event) => {
-    const video = event.target;
-    if (!isTrackedVideo(video)) return;
-    if (autoplayEnabledSetting.get()) return;
-    if (isManualVideoPlay(video)) return;
+      video.pause();
+      video.autoplay = false;
+      video.removeAttribute('autoplay');
+    },
+    true
+  );
 
-    video.pause();
-    video.autoplay = false;
-    video.removeAttribute('autoplay');
-  }, true);
-
-  document.addEventListener('playing', (event) => {
-    const video = event.target;
-    if (!isTrackedVideo(video)) return;
-    if (autoplayEnabledSetting.get()) return;
-    if (isManualVideoPlay(video)) return;
-
-    video.pause();
-  }, true);
 
   // ============================================================
-  // 選択パネルCSS
+  // CSS定義（動的な値を含むスタイルは applyStyles 側で生成）
   // ============================================================
 
   const CHOICE_PANEL_CSS = `
@@ -265,6 +265,180 @@
     }
   `;
 
+  const SETTINGS_PANEL_CSS = `
+    .tt-toggle-switch {
+      width: 44px;
+      height: 24px;
+      border-radius: 9999px;
+      background: #cbd5e1;
+      position: relative;
+      border: none;
+      padding: 0;
+      cursor: pointer;
+      flex-shrink: 0;
+      transition: background 0.15s;
+    }
+    .tt-toggle-switch[aria-checked="true"] {
+      background: #0ea5e9;
+    }
+    .tt-toggle-thumb {
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: #fff;
+      transition: transform 0.15s;
+    }
+    .tt-toggle-switch[aria-checked="true"] .tt-toggle-thumb {
+      transform: translateX(20px);
+    }
+    .tt-settings-value-btn {
+      font-size: 13px;
+      font-weight: 700;
+      padding: 6px 12px;
+      border-radius: 9999px;
+      border: 1px solid var(--color-tl-app-border, #d1d5db);
+      background: var(--color-tl-app-card, transparent);
+      color: var(--color-tl-app-text-muted, #64748b);
+      cursor: pointer;
+      white-space: nowrap;
+    }
+  `;
+
+  const NOTIFICATION_TOAST_CSS = `
+    .tt-notification-toast {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%) translateY(12px);
+      background: #1d9bf0;
+      color: #fff;
+      padding: 12px 24px;
+      border-radius: 9999px;
+      font-size: 15px;
+      font-weight: 400;
+      box-shadow: 0 0 12px rgba(0,0,0,0.15);
+      z-index: 10050;
+      opacity: 0;
+      transition: opacity 0.2s ease, transform 0.2s ease;
+      pointer-events: none;
+      white-space: nowrap;
+      max-width: calc(100vw - 32px);
+    }
+    .tt-notification-toast.tt-toast-show {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+  `;
+
+  const TRANSLATE_BTN_CSS = `
+    .tt-compose-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      cursor: pointer;
+      color: rgb(101,119,134);
+      font-size: 13px;
+      margin-top: 6px;
+      user-select: none;
+      width: fit-content;
+    }
+    .tt-compose-btn:hover { color: #1da1f2; }
+    .tt-compose-result {
+      margin-top: 6px;
+      padding: 8px 10px;
+      background: rgba(23,191,99,0.08);
+      border-left: 3px solid #17bf63;
+      border-radius: 4px;
+      font-size: 14px;
+      white-space: pre-wrap;
+      cursor: pointer;
+    }
+  `;
+
+  const GALLERY_CSS = `
+    #tweetapp-gallery-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.92);
+      z-index: 10001;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      touch-action: none;
+    }
+    #tweetapp-gallery-track {
+      display: flex;
+      width: 100%;
+      height: 100%;
+      transition: transform 0.25s ease-out;
+    }
+    #tweetapp-gallery-track.tweetapp-gallery-no-transition {
+      transition: none;
+    }
+    .tweetapp-gallery-slide {
+      flex: 0 0 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+    }
+    .tweetapp-gallery-slide img {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+    }
+    #tweetapp-gallery-close {
+      position: absolute;
+      top: 16px;
+      left: 16px;
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      background: rgba(0,0,0,0.5);
+      color: #fff;
+      border: none;
+      font-size: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 10002;
+    }
+    #tweetapp-gallery-counter {
+      position: absolute;
+      top: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      color: #fff;
+      font-size: 14px;
+      background: rgba(0,0,0,0.5);
+      padding: 4px 12px;
+      border-radius: 12px;
+      z-index: 10002;
+    }
+    .tweetapp-gallery-arrow {
+      position: absolute;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      background: rgba(0,0,0,0.5);
+      color: #fff;
+      border: none;
+      font-size: 22px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 10002;
+    }
+    #tweetapp-gallery-prev { left: 12px; }
+    #tweetapp-gallery-next { right: 12px; }
+  `;
+
   // ============================================================
   // スタイル適用
   // ============================================================
@@ -319,32 +493,29 @@
       ${TRANSLATE_BTN_CSS}
       ${GALLERY_CSS}
       ${SETTINGS_PANEL_CSS}
+      ${NOTIFICATION_TOAST_CSS}
     `;
 
     applyFontSizeToBodies();
     applyFontSizeToComposers();
   }
 
-  function applyFontSizeToBodies(root = document) {
-    const fontSize = fontSizeSetting.get();
-    root.querySelectorAll?.('article p').forEach((p) => {
-      p.style.setProperty('font-size', `${fontSize}px`, 'important');
-      p.style.setProperty('line-height', '1.5', 'important');
-    });
+  function setFontStyle(el, fontSize) {
+    el.style.setProperty('font-size', `${fontSize}px`, 'important');
+    el.style.setProperty('line-height', '1.5', 'important');
   }
 
+  function applyFontSizeToBodies(root = document) {
+    const fontSize = fontSizeSetting.get();
+    collectMatching(root, 'article p').forEach((p) => setFontStyle(p, fontSize));
+  }
+
+  // 入力欄は裏側のミラー要素も揃えないと文字とカーソル位置がずれる
   function applyFontSizeToComposers(root = document) {
     const fontSize = fontSizeSetting.get();
-    root.querySelectorAll?.(CONFIG.composer.textareaSelector).forEach((textarea) => {
-      textarea.style.setProperty('font-size', `${fontSize}px`, 'important');
-      textarea.style.setProperty('line-height', '1.5', 'important');
-
-      if (textarea.parentElement) {
-        textarea.parentElement.querySelectorAll('*').forEach((el) => {
-          el.style.setProperty('font-size', `${fontSize}px`, 'important');
-          el.style.setProperty('line-height', '1.5', 'important');
-        });
-      }
+    collectMatching(root, CONFIG.composer.textareaSelector).forEach((textarea) => {
+      setFontStyle(textarea, fontSize);
+      textarea.parentElement?.querySelectorAll('*').forEach((el) => setFontStyle(el, fontSize));
     });
   }
 
@@ -422,47 +593,6 @@
   // /settings ページへの設定パネル埋め込み
   // ============================================================
 
-  const SETTINGS_PANEL_CSS = `
-    .tt-toggle-switch {
-      width: 44px;
-      height: 24px;
-      border-radius: 9999px;
-      background: #cbd5e1;
-      position: relative;
-      border: none;
-      padding: 0;
-      cursor: pointer;
-      flex-shrink: 0;
-      transition: background 0.15s;
-    }
-    .tt-toggle-switch[aria-checked="true"] {
-      background: #0ea5e9;
-    }
-    .tt-toggle-thumb {
-      position: absolute;
-      top: 2px;
-      left: 2px;
-      width: 20px;
-      height: 20px;
-      border-radius: 50%;
-      background: #fff;
-      transition: transform 0.15s;
-    }
-    .tt-toggle-switch[aria-checked="true"] .tt-toggle-thumb {
-      transform: translateX(20px);
-    }
-    .tt-settings-value-btn {
-      font-size: 13px;
-      font-weight: 700;
-      padding: 6px 12px;
-      border-radius: 9999px;
-      border: 1px solid var(--color-tl-app-border, #d1d5db);
-      background: var(--color-tl-app-card, transparent);
-      color: var(--color-tl-app-text-muted, #64748b);
-      cursor: pointer;
-      white-space: nowrap;
-    }
-  `;
 
   function createSettingsRow(title, description, controlEl) {
     const row = document.createElement('div');
@@ -593,6 +723,28 @@
     const autoplayToggle = createToggleControl(autoplayEnabledSetting, 'ON', 'OFF');
     card.appendChild(createSettingsRow('Video/GIF autoplay', 'Automatically play videos and GIFs while scrolling', autoplayToggle.el));
 
+    // Notification toast + sound
+    const notificationToastToggle = createToggleControl(notificationToastEnabledSetting, 'ON', 'OFF');
+    card.appendChild(createSettingsRow('Notification popup', 'Show a popup when your notification count increases', notificationToastToggle.el));
+
+    const notificationSoundCtrl = createActionValueControl(
+      () => {
+        const s = notificationSoundSetting.get();
+        return s.charAt(0).toUpperCase() + s.slice(1);
+      },
+      () => {
+        const sounds = CONFIG.notificationToast.sounds;
+        const curIdx = sounds.indexOf(notificationSoundSetting.get());
+        showChoicePanel(
+          'Select notification sound',
+          sounds.map((s) => s.charAt(0).toUpperCase() + s.slice(1)),
+          curIdx,
+          (i) => notificationSoundSetting.set(sounds[i])
+        );
+      }
+    );
+    card.appendChild(createSettingsRow('Notification sound', 'Sound to play with the notification popup', notificationSoundCtrl.el));
+
     // Link card
     const linkCardToggle = createToggleControl(linkCardEnabledSetting, 'ON', 'OFF');
     card.appendChild(createSettingsRow('Link card previews', 'Show OGP preview cards for links in tweets', linkCardToggle.el));
@@ -622,6 +774,163 @@
     if (!container) return;
 
     container.appendChild(buildSettingsSection());
+  }
+
+  // ============================================================
+  // 通知バッジ増加のポップアップ通知
+  // ============================================================
+  // サイドバーのNotificationsバッジ数をポーリングし、増加時にトーストと通知音を出す。
+  // バッジ更新の契機が多様でDOM変化を掴みにくいため、MutationObserverではなくポーリング。
+
+  let lastNotificationCount = null;
+  let audioCtx = null;
+
+  // ページの最初のユーザー操作でAudioContextを初期化(自動再生ポリシー対策)
+  function ensureAudioCtx() {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    return audioCtx;
+  }
+  document.addEventListener('click', ensureAudioCtx, { once: true, capture: true });
+  document.addEventListener('keydown', ensureAudioCtx, { once: true, capture: true });
+
+  // 短い正弦波を鳴らす共通ルーティン
+  // freq: Hz, startTime: ctx.currentTime基準の開始秒, duration: 秒, gain: 0~1
+  function playTone(ctx, freq, startTime, duration, gain = 0.35) {
+    const osc = ctx.createOscillator();
+    const env = ctx.createGain();
+    osc.connect(env);
+    env.connect(ctx.destination);
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(freq, startTime);
+    env.gain.setValueAtTime(0, startTime);
+    env.gain.linearRampToValueAtTime(gain, startTime + 0.01);
+    env.gain.exponentialRampToValueAtTime(0.001, startTime + duration);
+    osc.start(startTime);
+    osc.stop(startTime + duration + 0.05);
+  }
+
+  // マリンバ風: サイン波にトレモロ(高調波)を重ねて木質感を出す
+  function playMarimbaNote(ctx, freq, startTime, gain = 0.3) {
+    [1, 4, 10].forEach((harmonic, i) => {
+      const g = gain / (i + 1);
+      const osc = ctx.createOscillator();
+      const env = ctx.createGain();
+      osc.connect(env);
+      env.connect(ctx.destination);
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq * harmonic, startTime);
+      env.gain.setValueAtTime(0, startTime);
+      env.gain.linearRampToValueAtTime(g, startTime + 0.005);
+      env.gain.exponentialRampToValueAtTime(0.001, startTime + 0.5 / harmonic);
+      osc.start(startTime);
+      osc.stop(startTime + 0.7);
+    });
+  }
+
+  // ベル風: 倍音を複数重ねてメタリックな余韻を出す
+  function playBellNote(ctx, freq, startTime, gain = 0.25) {
+    [1, 2.756, 5.404, 7].forEach((ratio, i) => {
+      const osc = ctx.createOscillator();
+      const env = ctx.createGain();
+      osc.connect(env);
+      env.connect(ctx.destination);
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq * ratio, startTime);
+      const g = gain / (i * 0.8 + 1);
+      env.gain.setValueAtTime(0, startTime);
+      env.gain.linearRampToValueAtTime(g, startTime + 0.005);
+      env.gain.exponentialRampToValueAtTime(0.001, startTime + 1.2 - i * 0.2);
+      osc.start(startTime);
+      osc.stop(startTime + 1.5);
+    });
+  }
+
+  const SOUND_PLAYERS = {
+    none: () => {},
+    // 明るい3音上昇チャイム(C4→E4→G4)
+    chime: () => {
+      const ctx = ensureAudioCtx();
+      const t = ctx.currentTime;
+      [261.63, 329.63, 392.00].forEach((freq, i) => playTone(ctx, freq, t + i * 0.12, 0.35));
+    },
+    // やわらかい水滴音: 高めの音を素早くフェードアウト
+    drop: () => {
+      const ctx = ensureAudioCtx();
+      const t = ctx.currentTime;
+      playTone(ctx, 880, t, 0.18, 0.3);
+    },
+    // マリンバ風2音下降(G4→E4)
+    marimba: () => {
+      const ctx = ensureAudioCtx();
+      const t = ctx.currentTime;
+      playMarimbaNote(ctx, 392.00, t);
+      playMarimbaNote(ctx, 329.63, t + 0.15);
+    },
+    // ベル風2音上昇(E4→G4)
+    bell: () => {
+      const ctx = ensureAudioCtx();
+      const t = ctx.currentTime;
+      playBellNote(ctx, 329.63, t);
+      playBellNote(ctx, 392.00, t + 0.18, 0.2);
+    },
+  };
+
+  function playNotificationSound() {
+    try {
+      const sound = notificationSoundSetting.get();
+      SOUND_PLAYERS[sound]?.();
+    } catch (e) {
+      // Web Audio APIが使えない環境では無視
+    }
+  }
+
+  function findNotificationBadge() {
+    const label = Array.from(document.querySelectorAll('span, div')).find(
+      (el) => el.children.length === 0 && el.textContent.trim() === 'Notifications'
+    );
+    return label?.closest('a, button')?.querySelector('span.rounded-full') || null;
+  }
+
+  function getNotificationBadgeCount() {
+    const badge = findNotificationBadge();
+    if (!badge) return 0;
+    const count = parseInt(badge.textContent.trim(), 10);
+    return Number.isNaN(count) ? 0 : count;
+  }
+
+  function showNotificationToast(delta) {
+    document.querySelectorAll('.tt-notification-toast').forEach((el) => el.remove());
+
+    const toast = document.createElement('div');
+    toast.className = 'tt-notification-toast';
+    toast.textContent =
+      delta === 1 ? 'You have a new notification!' : `You have ${delta} new notifications!`;
+    document.body.appendChild(toast);
+
+    playNotificationSound();
+
+    requestAnimationFrame(() => toast.classList.add('tt-toast-show'));
+    setTimeout(() => {
+      toast.classList.remove('tt-toast-show');
+      setTimeout(() => toast.remove(), 250);
+    }, CONFIG.notificationToast.displayMs);
+  }
+
+  function checkNotificationCount() {
+    if (!notificationToastEnabledSetting.get()) return;
+    const current = getNotificationBadgeCount();
+    // 初回は基準値の記録のみ（既存の未読数で誤発火させない）
+    if (lastNotificationCount === null) {
+      lastNotificationCount = current;
+      return;
+    }
+    if (current > lastNotificationCount) showNotificationToast(current - lastNotificationCount);
+    lastNotificationCount = current;
+  }
+
+  function startNotificationPolling() {
+    setInterval(checkNotificationCount, CONFIG.notificationToast.pollIntervalMs);
   }
 
   // ============================================================
@@ -771,30 +1080,6 @@
   // 投稿(compose)欄の翻訳機能
   // ============================================================
 
-  const TRANSLATE_BTN_CSS = `
-    .tt-compose-btn {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      cursor: pointer;
-      color: rgb(101,119,134);
-      font-size: 13px;
-      margin-top: 6px;
-      user-select: none;
-      width: fit-content;
-    }
-    .tt-compose-btn:hover { color: #1da1f2; }
-    .tt-compose-result {
-      margin-top: 6px;
-      padding: 8px 10px;
-      background: rgba(23,191,99,0.08);
-      border-left: 3px solid #17bf63;
-      border-radius: 4px;
-      font-size: 14px;
-      white-space: pre-wrap;
-      cursor: pointer;
-    }
-  `;
 
   function buildTranslateUrl(endpoint, text, lang) {
     if (endpoint === 'primary') {
@@ -932,9 +1217,7 @@
   }
 
   function processComposeBoxes(root = document) {
-    const els = root instanceof Element && root.matches?.(CONFIG.translate.composeSelector)
-      ? [root]
-      : Array.from(root.querySelectorAll?.(CONFIG.translate.composeSelector) || []);
+    const els = collectMatching(root, CONFIG.translate.composeSelector);
 
     els.forEach((el) => {
       if (el.dataset.ttComposeDone) return;
@@ -1000,86 +1283,6 @@
   // 複数画像のスワイプギャラリー
   // ============================================================
 
-  const GALLERY_CSS = `
-    #tweetapp-gallery-overlay {
-      position: fixed;
-      inset: 0;
-      background: rgba(0,0,0,0.92);
-      z-index: 10001;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      overflow: hidden;
-      touch-action: none;
-    }
-    #tweetapp-gallery-track {
-      display: flex;
-      width: 100%;
-      height: 100%;
-      transition: transform 0.25s ease-out;
-    }
-    #tweetapp-gallery-track.tweetapp-gallery-no-transition {
-      transition: none;
-    }
-    .tweetapp-gallery-slide {
-      flex: 0 0 100%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      height: 100%;
-    }
-    .tweetapp-gallery-slide img {
-      max-width: 100%;
-      max-height: 100%;
-      object-fit: contain;
-    }
-    #tweetapp-gallery-close {
-      position: absolute;
-      top: 16px;
-      left: 16px;
-      width: 40px;
-      height: 40px;
-      border-radius: 50%;
-      background: rgba(0,0,0,0.5);
-      color: #fff;
-      border: none;
-      font-size: 20px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      z-index: 10002;
-    }
-    #tweetapp-gallery-counter {
-      position: absolute;
-      top: 24px;
-      left: 50%;
-      transform: translateX(-50%);
-      color: #fff;
-      font-size: 14px;
-      background: rgba(0,0,0,0.5);
-      padding: 4px 12px;
-      border-radius: 12px;
-      z-index: 10002;
-    }
-    .tweetapp-gallery-arrow {
-      position: absolute;
-      top: 50%;
-      transform: translateY(-50%);
-      width: 44px;
-      height: 44px;
-      border-radius: 50%;
-      background: rgba(0,0,0,0.5);
-      color: #fff;
-      border: none;
-      font-size: 22px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      z-index: 10002;
-    }
-    #tweetapp-gallery-prev { left: 12px; }
-    #tweetapp-gallery-next { right: 12px; }
-  `;
 
   function findGalleryImages(article) {
     // "Attached media" のimgを複数含むグリッドを探す(単一画像は対象外)
@@ -1234,9 +1437,7 @@
   }
 
   function processGalleryArticles(root = document) {
-    const articles = root instanceof Element && root.matches?.('article')
-      ? [root]
-      : Array.from(root.querySelectorAll?.('article') || []);
+    const articles = collectMatching(root, 'article');
     articles.forEach(attachGalleryHandlers);
   }
 
@@ -1255,9 +1456,7 @@
   function prefillInlineReplyHandles(root = document) {
     if (!replyPrefillEnabledSetting.get()) return;
 
-    const textareas = root instanceof HTMLTextAreaElement && root.name === 'compose-text'
-      ? [root]
-      : Array.from(root.querySelectorAll?.('textarea[name="compose-text"]') || []);
+    const textareas = collectMatching(root, 'textarea[name="compose-text"]');
 
     textareas.forEach((textarea) => {
       if (textarea.dataset.ttPrefillDone) return;
@@ -1349,6 +1548,7 @@
     processGalleryArticles();
     prefillInlineReplyHandles();
     injectSettingsSection();
+    startNotificationPolling();
 
     requestAnimationFrame(() => {
       applyStyles();
