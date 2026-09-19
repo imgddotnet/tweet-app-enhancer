@@ -8,6 +8,8 @@
   ],
   "host_permissions": [
     "https://app.tweet.app/*",
+    "https://translate.googleapis.com/*",
+    "https://clients5.google.com/*",
     "https://*/*",
     "http://*/*"
   ],
@@ -18,7 +20,7 @@
     {
       "matches": ["https://app.tweet.app/*"],
       "js": ["content.js"],
-      "run_at": "document_start"
+      "run_at": "document_idle"
     }
   ]
 }

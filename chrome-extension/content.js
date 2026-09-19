@@ -30,23 +30,22 @@
   }
 
   // background.js経由でfetchする(ページのCSPやCORSの影響を受けない)
+  // service workerが停止中など例外ケースはrejectしてcatch側に任せる
   function bgFetch(url) {
     return new Promise((resolve, reject) => {
-      chrome.runtime.sendMessage({ type: 'tt-fetch', url }, (response) => {
-        if (chrome.runtime.lastError) {
-          reject(chrome.runtime.lastError.message);
-          return;
-        }
-        if (!response) {
-          reject('no response');
-          return;
-        }
-        if (response.error) {
-          reject(response.error);
-          return;
-        }
-        resolve(response);
-      });
+      try {
+        chrome.runtime.sendMessage({ type: 'tt-fetch', url }, (response) => {
+          if (chrome.runtime.lastError) {
+            reject(chrome.runtime.lastError.message);
+            return;
+          }
+          if (!response) { reject('no response'); return; }
+          if (response.error) { reject(response.error); return; }
+          resolve(response);
+        });
+      } catch (e) {
+        reject(e);
+      }
     });
   }
 
@@ -824,12 +823,26 @@
   let lastNotificationCount = null;
   let audioCtx = null;
 
-  // ページの最初のユーザー操作でAudioContextを初期化(自動再生ポリシー対策)
+  // AudioContextはユーザー操作の中で初めて呼ばれた時に生成する。
+  // ページロード時やcontent script初期化時に生成すると自動再生ポリシー違反になる。
   function ensureAudioCtx() {
-    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    if (audioCtx.state === 'suspended') audioCtx.resume();
+    if (!audioCtx) {
+      try {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      } catch (e) {
+        return null;
+      }
+    }
+    // resume()はPromiseを返す。ユーザー操作を伴わない呼び出し(ポーリング等)では
+    // 拒否されることがあるため、未処理のPromise拒否にならないよう必ず捕捉する。
+    if (audioCtx.state === 'suspended') {
+      audioCtx.resume().catch(() => {});
+    }
     return audioCtx;
   }
+
+  // ページ上でのユーザーの最初の操作をきっかけにresumeを試みておく。
+  // ポーリングによる自動チェックだけではsuspendedのまま鳴らせないための保険。
   document.addEventListener('click', ensureAudioCtx, { once: true, capture: true });
   document.addEventListener('keydown', ensureAudioCtx, { once: true, capture: true });
 
@@ -889,26 +902,26 @@
     none: () => {},
     // 明るい3音上昇チャイム(C4→E4→G4)
     chime: () => {
-      const ctx = ensureAudioCtx();
+      const ctx = ensureAudioCtx(); if (!ctx) return;
       const t = ctx.currentTime;
       [261.63, 329.63, 392.00].forEach((freq, i) => playTone(ctx, freq, t + i * 0.12, 0.35));
     },
     // やわらかい水滴音: 高めの音を素早くフェードアウト
     drop: () => {
-      const ctx = ensureAudioCtx();
+      const ctx = ensureAudioCtx(); if (!ctx) return;
       const t = ctx.currentTime;
       playTone(ctx, 880, t, 0.18, 0.3);
     },
     // マリンバ風2音下降(G4→E4)
     marimba: () => {
-      const ctx = ensureAudioCtx();
+      const ctx = ensureAudioCtx(); if (!ctx) return;
       const t = ctx.currentTime;
       playMarimbaNote(ctx, 392.00, t);
       playMarimbaNote(ctx, 329.63, t + 0.15);
     },
     // ベル風2音上昇(E4→G4)
     bell: () => {
-      const ctx = ensureAudioCtx();
+      const ctx = ensureAudioCtx(); if (!ctx) return;
       const t = ctx.currentTime;
       playBellNote(ctx, 329.63, t);
       playBellNote(ctx, 392.00, t + 0.18, 0.2);
