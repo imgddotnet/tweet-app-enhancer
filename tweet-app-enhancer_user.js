@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tweet.app Enhancer
 // @namespace    https://imgd.net/
-// @version      1.5.2
+// @version      1.6.0
 // @description  Font size, content width, always-visible composer, video/GIF autoplay, OGP link cards, compose translation, swipe photo gallery, and reply @handle prefill for app.tweet.app — all configurable from the Settings page.
 // @match        https://app.tweet.app/*
 // @grant        GM_getValue
@@ -17,15 +17,19 @@
 (function () {
   'use strict';
 
-  // ============================================================
   // CONFIG
-  // ============================================================
-
   const CONFIG = {
     font: {
-      key: 'tweetapp_font_size_px',
-      default: 15,
-      presets: [15, 18, 22],
+      key: 'tweetapp_article_zoom_pct',
+      default: 100,
+      presets: [
+        { pct: 100, label: '100% (Default)' },
+        { pct: 110, label: '110%' },
+        { pct: 120, label: '120%' },
+        { pct: 125, label: '125%' },
+        { pct: 130, label: '130%' },
+        { pct: 150, label: '150%' },
+      ],
     },
     media: {
       key: 'tweetapp_media_width_pct',
@@ -91,11 +95,7 @@
     },
   };
 
-  // ============================================================
-  // Settings
-  // ============================================================
-
-  // root自身がセレクタに一致する場合も含めて要素を収集する
+  // Settings State
   function collectMatching(root, selector) {
     const matches = root instanceof Element && root.matches?.(selector) ? [root] : [];
     return matches.concat(Array.from(root.querySelectorAll?.(selector) || []));
@@ -127,13 +127,7 @@
   const notificationToastEnabledSetting = createSetting(CONFIG.notificationToast.enabledKey, CONFIG.notificationToast.enabledDefault, () => {});
   const notificationSoundSetting = createSetting(CONFIG.notificationToast.soundKey, CONFIG.notificationToast.soundDefault, () => {});
 
-  // ============================================================
-  // 動画・GIF自動再生制御
-  // ============================================================
-  // 挿入時にautoplay属性を外してpauseし、OFF中はplayイベントも監視して止める。
-  // ただし動画への直接操作を検知したらユーザー管理下として以後は触れない（WeakSet）。
-  // 制約: ネイティブコントロール経由の操作がvideoまで伝播しない環境では手動再生も止まる。
-
+  // Video / GIF Autoplay
   const userTouchedVideos = new WeakSet();
 
   function isTrackedVideo(node) {
@@ -155,7 +149,7 @@
   function stopVideo(video, force = false) {
     if (!(video instanceof HTMLVideoElement)) return;
     bindVideoGestureListeners(video);
-    if (!force && userTouchedVideos.has(video)) return; // ユーザー管理下の動画には触れない
+    if (!force && userTouchedVideos.has(video)) return;
     video.autoplay = false;
     video.removeAttribute('autoplay');
     video.pause();
@@ -170,31 +164,20 @@
     if (video.paused) video.play().catch(() => {});
   }
 
-  function applyAutoplayToVideo(video, force = false) {
-    if (!isTrackedVideo(video)) return;
-    if (autoplayEnabledSetting.get()) startVideo(video);
-    else stopVideo(video, force);
-  }
-
   function applyAutoplaySetting(root = document, force = false) {
     const enabled = autoplayEnabledSetting.get();
     const videos = collectMatching(root, 'article video');
-
     videos.forEach((video) => {
       if (enabled) startVideo(video);
       else stopVideo(video, force);
     });
   }
 
-  // 属性ベースの抑止では防げない、JS経由の自動再生に対応
   document.addEventListener(
     'play',
     (event) => {
       const video = event.target;
-      if (!isTrackedVideo(video)) return;
-      if (autoplayEnabledSetting.get()) return;
-      if (userTouchedVideos.has(video)) return;
-
+      if (!isTrackedVideo(video) || autoplayEnabledSetting.get() || userTouchedVideos.has(video)) return;
       video.pause();
       video.autoplay = false;
       video.removeAttribute('autoplay');
@@ -202,69 +185,7 @@
     true
   );
 
-
-  // ============================================================
-  // CSS定義（動的な値を含むスタイルは applyStyles 側で生成）
-  // ============================================================
-
-  const CHOICE_PANEL_CSS = `
-    #tweetapp-choice-overlay {
-      position: fixed;
-      inset: 0;
-      background: rgba(0,0,0,0.4);
-      z-index: 10000;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-    #tweetapp-choice-panel {
-      background: #fff;
-      border-radius: 14px;
-      min-width: 240px;
-      max-width: 90vw;
-      overflow: hidden;
-      box-shadow: 0 4px 20px rgba(0,0,0,0.3);
-      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-    }
-    #tweetapp-choice-panel .tweetapp-choice-title {
-      padding: 14px 16px 8px;
-      font-size: 13px;
-      color: #536471;
-      border-bottom: 1px solid #eee;
-    }
-    #tweetapp-choice-panel .tweetapp-choice-item {
-      display: block;
-      width: 100%;
-      text-align: left;
-      padding: 14px 16px;
-      font-size: 16px;
-      color: #0f1419;
-      background: #fff;
-      border: none;
-      border-bottom: 1px solid #eee;
-    }
-    #tweetapp-choice-panel .tweetapp-choice-item:last-of-type {
-      border-bottom: none;
-    }
-    #tweetapp-choice-panel .tweetapp-choice-item:active {
-      background: #f0f3f4;
-    }
-    #tweetapp-choice-panel .tweetapp-choice-item.tweetapp-choice-current {
-      color: #1d9bf0;
-      font-weight: 600;
-    }
-    #tweetapp-choice-panel .tweetapp-choice-cancel {
-      display: block;
-      width: 100%;
-      text-align: center;
-      padding: 14px 16px;
-      font-size: 15px;
-      color: #536471;
-      background: #f7f8f8;
-      border: none;
-    }
-  `;
-
+  // CSS Styles
   const SETTINGS_PANEL_CSS = `
     .tt-toggle-switch {
       width: 44px;
@@ -304,6 +225,21 @@
       color: var(--color-tl-app-text-muted, #64748b);
       cursor: pointer;
       white-space: nowrap;
+    }
+    .tt-settings-select {
+      font-size: 13px;
+      font-weight: 700;
+      padding: 6px 12px;
+      border-radius: 9999px;
+      border: 1px solid var(--color-tl-app-border, #d1d5db);
+      background: var(--color-tl-app-card, transparent);
+      color: var(--color-tl-app-text-muted, #64748b);
+      cursor: pointer;
+      outline: none;
+    }
+    .tt-settings-select option {
+      background: var(--color-tl-app-card, #ffffff);
+      color: var(--color-tl-app-text, #0f1419);
     }
   `;
 
@@ -439,10 +375,6 @@
     #tweetapp-gallery-next { right: 12px; }
   `;
 
-  // ============================================================
-  // スタイル適用
-  // ============================================================
-
   function applyStyles() {
     if (!styleEl) {
       styleEl = document.createElement('style');
@@ -450,31 +382,17 @@
       if (document.documentElement) document.documentElement.appendChild(styleEl);
     }
 
-    const fontSize = fontSizeSetting.get();
+    const zoomPct = fontSizeSetting.get();
     const mediaPct = mediaPctSetting.get();
     const composerVisible = composerVisibleSetting.get();
     const onSettingsPage = location.pathname.startsWith('/settings');
 
     styleEl.textContent = `
-      /* ツイート本文のフォントサイズ */
-      article p {
-        font-size: ${fontSize}px !important;
-        line-height: 1.5 !important;
+      article,
+      div:has(> textarea) {
+        zoom: ${zoomPct}% !important;
       }
 
-      /* 入力テキストエリアおよび裏側のミラー表示要素（文字＆カーソル位置ずれ防止） */
-      textarea#public-tweet-input,
-      textarea#public-modal-tweet-input,
-      textarea[name="compose-text"],
-      textarea,
-      div:has(> textarea) [aria-hidden="true"],
-      div:has(> textarea) div {
-        font-size: ${fontSize}px !important;
-        line-height: 1.5 !important;
-      }
-
-      /* 画像・動画・リンクカードの表示幅(記事内・News/Sportsタブのリンクカードに適用)。
-         /settings ページはカードUIが同じクラスを使い回しているため対象外にする */
       ${onSettingsPage ? '' : `
       div.rounded-2xl.overflow-hidden,
       div.${CONFIG.linkCard.className} {
@@ -483,106 +401,16 @@
         margin-right: auto !important;
       }`}
 
-      /* 常時表示の投稿欄（フィード最上部のみ） */
       ${composerVisible ? '' : `
       ${CONFIG.composer.containerSelector} {
         display: none !important;
       }`}
 
-      ${CHOICE_PANEL_CSS}
       ${TRANSLATE_BTN_CSS}
       ${GALLERY_CSS}
       ${SETTINGS_PANEL_CSS}
       ${NOTIFICATION_TOAST_CSS}
     `;
-
-    applyFontSizeToBodies();
-    applyFontSizeToComposers();
-  }
-
-  function setFontStyle(el, fontSize) {
-    el.style.setProperty('font-size', `${fontSize}px`, 'important');
-    el.style.setProperty('line-height', '1.5', 'important');
-  }
-
-  function applyFontSizeToBodies(root = document) {
-    const fontSize = fontSizeSetting.get();
-    collectMatching(root, 'article p').forEach((p) => setFontStyle(p, fontSize));
-  }
-
-  // 入力欄は裏側のミラー要素も揃えないと文字とカーソル位置がずれる
-  // collectMatchingではなくquerySelectorAllを使う: rootがtextarea自身の場合に
-  // parentElement全体をstyle書き換えしてReactのvalue状態を乱すのを防ぐため
-  function applyFontSizeToComposers(root = document) {
-    const fontSize = fontSizeSetting.get();
-    root.querySelectorAll?.(CONFIG.composer.textareaSelector).forEach((textarea) => {
-      setFontStyle(textarea, fontSize);
-      textarea.parentElement?.querySelectorAll('*').forEach((el) => setFontStyle(el, fontSize));
-    });
-  }
-
-  // ============================================================
-  // 選択パネル
-  // ============================================================
-
-  function showChoicePanel(title, items, currentIndex, onSelect) {
-    const overlay = document.createElement('div');
-    overlay.id = 'tweetapp-choice-overlay';
-
-    const panel = document.createElement('div');
-    panel.id = 'tweetapp-choice-panel';
-
-    const titleEl = document.createElement('div');
-    titleEl.className = 'tweetapp-choice-title';
-    titleEl.textContent = title;
-    panel.appendChild(titleEl);
-
-    items.forEach((label, i) => {
-      const isCurrent = i === currentIndex;
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'tweetapp-choice-item' + (isCurrent ? ' tweetapp-choice-current' : '');
-      btn.textContent = label + (isCurrent ? ' (current)' : '');
-      btn.addEventListener('click', () => {
-        overlay.remove();
-        onSelect(i);
-      });
-      panel.appendChild(btn);
-    });
-
-    const cancelBtn = document.createElement('button');
-    cancelBtn.type = 'button';
-    cancelBtn.className = 'tweetapp-choice-cancel';
-    cancelBtn.textContent = 'Cancel';
-    cancelBtn.addEventListener('click', () => overlay.remove());
-    panel.appendChild(cancelBtn);
-
-    overlay.appendChild(panel);
-    overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) overlay.remove();
-    });
-    document.body.appendChild(overlay);
-  }
-
-  function chooseFontSize() {
-    const presets = CONFIG.font.presets;
-    const items = presets.map((px) => `${px}px`);
-    const curIdx = presets.indexOf(fontSizeSetting.get());
-    showChoicePanel('Select font size', items, curIdx, (i) => fontSizeSetting.set(presets[i]));
-  }
-
-  function chooseMediaWidth() {
-    const presets = CONFIG.media.presets;
-    const items = presets.map((m) => `${m.label}(${m.pct}%)`);
-    const curIdx = presets.findIndex((m) => m.pct === mediaPctSetting.get());
-    showChoicePanel('Select content width', items, curIdx, (i) => mediaPctSetting.set(presets[i].pct));
-  }
-
-  function chooseTranslateLang() {
-    const langs = CONFIG.translate.langs;
-    const items = langs.map(([, label]) => label);
-    const curIdx = langs.findIndex(([code]) => code === translateLangSetting.get());
-    showChoicePanel('Select translate target language', items, curIdx, (i) => translateLangSetting.set(langs[i][0]));
   }
 
   function clearOgpCache() {
@@ -591,11 +419,7 @@
     alert('Link card cache cleared');
   }
 
-  // ============================================================
-  // /settings ページへの設定パネル埋め込み
-  // ============================================================
-
-
+  // Settings Panel UI
   function createSettingsRow(title, description, controlEl) {
     const row = document.createElement('div');
     row.className = 'flex items-center justify-between gap-3 px-4 py-3.5';
@@ -645,24 +469,21 @@
     return { el: btn, render };
   }
 
-  function createActionValueControl(getLabel, onClick) {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'tt-settings-value-btn';
+  function createSelectControl(options, setting, parseFn = (v) => v) {
+    const select = document.createElement('select');
+    select.className = 'tt-settings-select';
 
-    function render() {
-      btn.textContent = getLabel();
-    }
-    render();
-
-    btn.addEventListener('click', () => {
-      onClick();
-      // showChoicePanelは非同期で選択されるため、少し遅延して再描画
-      setTimeout(render, 50);
-      setTimeout(render, 400);
+    options.forEach(({ value, label }) => {
+      const opt = document.createElement('option');
+      opt.value = String(value);
+      opt.textContent = label;
+      select.appendChild(opt);
     });
 
-    return { el: btn, render };
+    select.value = String(setting.get());
+    select.addEventListener('change', (e) => setting.set(parseFn(e.target.value)));
+
+    return { el: select };
   }
 
   function buildSettingsSection() {
@@ -682,20 +503,19 @@
     const card = document.createElement('div');
     card.className = 'rounded-2xl border border-tl-app-border overflow-hidden divide-y divide-tl-app-border';
 
-    // Font size
-    const fontSizeCtrl = createActionValueControl(
-      () => `${fontSizeSetting.get()}px`,
-      chooseFontSize
+    // Article & Compose zoom
+    const fontSizeCtrl = createSelectControl(
+      CONFIG.font.presets.map((item) => ({ value: item.pct, label: item.label })),
+      fontSizeSetting,
+      Number
     );
-    card.appendChild(createSettingsRow('Font size', 'Text size for tweets', fontSizeCtrl.el));
+    card.appendChild(createSettingsRow('Article & Compose zoom', 'Zoom level for tweet articles and compose boxes (%)', fontSizeCtrl.el));
 
     // Content width
-    const mediaWidthCtrl = createActionValueControl(
-      () => {
-        const m = CONFIG.media.presets.find((p2) => p2.pct === mediaPctSetting.get());
-        return m ? `${m.label} (${m.pct}%)` : `${mediaPctSetting.get()}%`;
-      },
-      chooseMediaWidth
+    const mediaWidthCtrl = createSelectControl(
+      CONFIG.media.presets.map((m) => ({ value: m.pct, label: `${m.label} (${m.pct}%)` })),
+      mediaPctSetting,
+      Number
     );
     card.appendChild(createSettingsRow('Content width', 'Width of media and content area', mediaWidthCtrl.el));
 
@@ -704,12 +524,9 @@
     card.appendChild(createSettingsRow('Reply @handle prefill', 'Prefill @handle when replying inline to a tweet', replyPrefillToggle.el));
 
     // Translate target language
-    const translateCtrl = createActionValueControl(
-      () => {
-        const l = CONFIG.translate.langs.find(([code]) => code === translateLangSetting.get());
-        return l ? l[1] : translateLangSetting.get();
-      },
-      chooseTranslateLang
+    const translateCtrl = createSelectControl(
+      CONFIG.translate.langs.map(([code, label]) => ({ value: code, label })),
+      translateLangSetting
     );
     card.appendChild(createSettingsRow('Translate target language', 'Language used when translating your draft before posting', translateCtrl.el));
 
@@ -725,25 +542,16 @@
     const autoplayToggle = createToggleControl(autoplayEnabledSetting, 'ON', 'OFF');
     card.appendChild(createSettingsRow('Video/GIF autoplay', 'Automatically play videos and GIFs while scrolling', autoplayToggle.el));
 
-    // Notification toast + sound
+    // Notification toast & sound
     const notificationToastToggle = createToggleControl(notificationToastEnabledSetting, 'ON', 'OFF');
     card.appendChild(createSettingsRow('Notification popup', 'Show a popup when your notification count increases', notificationToastToggle.el));
 
-    const notificationSoundCtrl = createActionValueControl(
-      () => {
-        const s = notificationSoundSetting.get();
-        return s.charAt(0).toUpperCase() + s.slice(1);
-      },
-      () => {
-        const sounds = CONFIG.notificationToast.sounds;
-        const curIdx = sounds.indexOf(notificationSoundSetting.get());
-        showChoicePanel(
-          'Select notification sound',
-          sounds.map((s) => s.charAt(0).toUpperCase() + s.slice(1)),
-          curIdx,
-          (i) => notificationSoundSetting.set(sounds[i])
-        );
-      }
+    const notificationSoundCtrl = createSelectControl(
+      CONFIG.notificationToast.sounds.map((s) => ({
+        value: s,
+        label: s.charAt(0).toUpperCase() + s.slice(1),
+      })),
+      notificationSoundSetting
     );
     card.appendChild(createSettingsRow('Notification sound', 'Sound to play with the notification popup', notificationSoundCtrl.el));
 
@@ -765,53 +573,34 @@
   }
 
   function injectSettingsSection() {
-    if (!location.pathname.startsWith('/settings')) return;
-    if (document.getElementById('tweetapp-enhancements-section')) return;
+    if (!location.pathname.startsWith('/settings') || document.getElementById('tweetapp-enhancements-section')) return;
 
-    // "Display" 見出しを目印に、同じflex-col gap-5コンテナへ追記
     const displayHeading = Array.from(document.querySelectorAll('h4')).find(
       (h) => h.textContent.trim() === 'Display'
     );
     const container = displayHeading?.closest('.flex.flex-col.gap-5');
-    if (!container) return;
-
-    container.appendChild(buildSettingsSection());
+    if (container) container.appendChild(buildSettingsSection());
   }
 
-  // ============================================================
-  // 通知バッジ増加のポップアップ通知
-  // ============================================================
-  // サイドバーのNotificationsバッジ数をポーリングし、増加時にトーストと通知音を出す。
-  // バッジ更新の契機が多様でDOM変化を掴みにくいため、MutationObserverではなくポーリング。
-
+  // Notifications
   let lastNotificationCount = null;
   let audioCtx = null;
 
-  // AudioContextはユーザー操作の中で初めて呼ばれた時に生成する。
-  // ページロード時やcontent script初期化時に生成すると自動再生ポリシー違反になる。
-  function ensureAudioCtx() {
+  function unlockAudio() {
     if (!audioCtx) {
-      try {
-        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      } catch (e) {
-        return null;
-      }
+      try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { return; }
     }
-    // resume()はPromiseを返す。ユーザー操作を伴わない呼び出し(ポーリング等)では
-    // 拒否されることがあるため、未処理のPromise拒否にならないよう必ず捕捉する。
-    if (audioCtx.state === 'suspended') {
-      audioCtx.resume().catch(() => {});
-    }
-    return audioCtx;
+    if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
   }
 
-  // ページ上でのユーザーの最初の操作をきっかけにresumeを試みておく。
-  // ポーリングによる自動チェックだけではsuspendedのまま鳴らせないための保険。
-  document.addEventListener('click', ensureAudioCtx, { once: true, capture: true });
-  document.addEventListener('keydown', ensureAudioCtx, { once: true, capture: true });
+  ['pointerdown', 'keydown', 'touchstart'].forEach((eventName) => {
+    document.addEventListener(eventName, unlockAudio, { capture: true, once: true, passive: true });
+  });
 
-  // 短い正弦波を鳴らす共通ルーティン
-  // freq: Hz, startTime: ctx.currentTime基準の開始秒, duration: 秒, gain: 0~1
+  function ensureAudioCtx() {
+    return audioCtx?.state === 'running' ? audioCtx : null;
+  }
+
   function playTone(ctx, freq, startTime, duration, gain = 0.35) {
     const osc = ctx.createOscillator();
     const env = ctx.createGain();
@@ -826,7 +615,6 @@
     osc.stop(startTime + duration + 0.05);
   }
 
-  // マリンバ風: サイン波にトレモロ(高調波)を重ねて木質感を出す
   function playMarimbaNote(ctx, freq, startTime, gain = 0.3) {
     [1, 4, 10].forEach((harmonic, i) => {
       const g = gain / (i + 1);
@@ -844,7 +632,6 @@
     });
   }
 
-  // ベル風: 倍音を複数重ねてメタリックな余韻を出す
   function playBellNote(ctx, freq, startTime, gain = 0.25) {
     [1, 2.756, 5.404, 7].forEach((ratio, i) => {
       const osc = ctx.createOscillator();
@@ -864,26 +651,21 @@
 
   const SOUND_PLAYERS = {
     none: () => {},
-    // 明るい3音上昇チャイム(C4→E4→G4)
     chime: () => {
       const ctx = ensureAudioCtx(); if (!ctx) return;
       const t = ctx.currentTime;
       [261.63, 329.63, 392.00].forEach((freq, i) => playTone(ctx, freq, t + i * 0.12, 0.35));
     },
-    // やわらかい水滴音: 高めの音を素早くフェードアウト
     drop: () => {
       const ctx = ensureAudioCtx(); if (!ctx) return;
-      const t = ctx.currentTime;
-      playTone(ctx, 880, t, 0.18, 0.3);
+      playTone(ctx, 880, ctx.currentTime, 0.18, 0.3);
     },
-    // マリンバ風2音下降(G4→E4)
     marimba: () => {
       const ctx = ensureAudioCtx(); if (!ctx) return;
       const t = ctx.currentTime;
       playMarimbaNote(ctx, 392.00, t);
       playMarimbaNote(ctx, 329.63, t + 0.15);
     },
-    // ベル風2音上昇(E4→G4)
     bell: () => {
       const ctx = ensureAudioCtx(); if (!ctx) return;
       const t = ctx.currentTime;
@@ -893,13 +675,7 @@
   };
 
   function playNotificationSound() {
-    try {
-      ensureAudioCtx(); // suspendedを毎回チェックして確実にresume
-      const sound = notificationSoundSetting.get();
-      SOUND_PLAYERS[sound]?.();
-    } catch (e) {
-      // Web Audio APIが使えない環境では無視
-    }
+    try { SOUND_PLAYERS[notificationSoundSetting.get()]?.(); } catch (e) {}
   }
 
   function findNotificationBadge() {
@@ -921,8 +697,7 @@
 
     const toast = document.createElement('div');
     toast.className = 'tt-notification-toast';
-    toast.textContent =
-      delta === 1 ? 'You have a new notification!' : `You have ${delta} new notifications!`;
+    toast.textContent = delta === 1 ? 'You have a new notification!' : `You have ${delta} new notifications!`;
     document.body.appendChild(toast);
 
     playNotificationSound();
@@ -937,7 +712,6 @@
   function checkNotificationCount() {
     if (!notificationToastEnabledSetting.get()) return;
     const current = getNotificationBadgeCount();
-    // 初回は基準値の記録のみ（既存の未読数で誤発火させない）
     if (lastNotificationCount === null) {
       lastNotificationCount = current;
       return;
@@ -950,10 +724,7 @@
     setInterval(checkNotificationCount, CONFIG.notificationToast.pollIntervalMs);
   }
 
-  // ============================================================
-  // OGPキャッシュ & リンクカード
-  // ============================================================
-
+  // OGP Link Cards
   const ogpCache = new Map();
 
   function loadOgpCacheFromStorage() {
@@ -988,9 +759,7 @@
           ogpCache.set(url, data);
           persistOgpCache();
           cb(data);
-        } catch (e) {
-          cb(null);
-        }
+        } catch (e) { cb(null); }
       },
       onerror: () => cb(null),
     });
@@ -999,9 +768,7 @@
   function parseOgpFromHtml(html) {
     const doc = new DOMParser().parseFromString(html, 'text/html');
     const getMeta = (prop) =>
-      doc.querySelector(`meta[property="${prop}"]`)?.content
-      || doc.querySelector(`meta[name="${prop}"]`)?.content
-      || '';
+      doc.querySelector(`meta[property="${prop}"]`)?.content || doc.querySelector(`meta[name="${prop}"]`)?.content || '';
 
     const title = getMeta('og:title') || doc.querySelector('title')?.textContent || '';
     const description = getMeta('og:description') || getMeta('description');
@@ -1085,52 +852,25 @@
       if (article.dataset.ogpFetching !== url) return;
       delete article.dataset.ogpFetching;
 
-      if (!linkCardEnabledSetting.get()) return;
-      if (!data) return;
-      if (article.querySelector('[data-ogp-card]')) return;
-
+      if (!linkCardEnabledSetting.get() || !data || article.querySelector('[data-ogp-card]')) return;
       article.querySelector('p')?.insertAdjacentElement('afterend', buildLinkCard(data, url));
     });
   }
 
-  // ============================================================
-  // 投稿(compose)欄の翻訳機能
-  // ============================================================
-
-
+  // Compose Translation
   function buildTranslateUrl(endpoint, text, lang) {
-    if (endpoint === 'primary') {
-      return (
-        'https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=' +
-        encodeURIComponent(lang) +
-        '&dt=t&q=' +
-        encodeURIComponent(text)
-      );
-    }
-    // フォールバック: clients5経由
-    return (
-      'https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=auto&tl=' +
-      encodeURIComponent(lang) +
-      '&q=' +
-      encodeURIComponent(text)
-    );
+    const base = endpoint === 'primary'
+      ? 'https://translate.googleapis.com/translate_a/single?client=gtx&dt=t'
+      : 'https://clients5.google.com/translate_a/t?client=dict-chrome-ex';
+    return `${base}&sl=auto&tl=${encodeURIComponent(lang)}&q=${encodeURIComponent(text)}`;
   }
 
   function parseTranslateResponse(endpoint, responseText) {
     const data = JSON.parse(responseText);
-    if (endpoint === 'primary') {
-      return data[0].map((seg) => seg[0]).join('');
-    }
-    // clients5(dict-chrome-ex)形式: [["翻訳結果","検出された原文言語コード"]]
-    if (Array.isArray(data) && Array.isArray(data[0])) {
-      return data[0][0];
-    }
-    if (Array.isArray(data) && typeof data[0] === 'string') {
-      return data[0];
-    }
-    if (data.sentences) {
-      return data.sentences.map((s) => s.trans).join('');
-    }
+    if (endpoint === 'primary') return data[0].map((seg) => seg[0]).join('');
+    if (Array.isArray(data) && Array.isArray(data[0])) return data[0][0];
+    if (Array.isArray(data) && typeof data[0] === 'string') return data[0];
+    if (data.sentences) return data.sentences.map((s) => s.trans).join('');
     throw new Error('unexpected format');
   }
 
@@ -1138,57 +878,25 @@
     GM_xmlhttpRequest({
       method: 'GET',
       url: buildTranslateUrl(endpoint, text, lang),
-      onload: function (res) {
-        if (res.status < 200 || res.status >= 300) {
-          onFail(res.status, res.responseText);
-          return;
-        }
-        try {
-          onSuccess(parseTranslateResponse(endpoint, res.responseText));
-        } catch (err) {
-          onFail('parse', res.responseText);
-        }
+      onload: (res) => {
+        if (res.status < 200 || res.status >= 300) return onFail(res.status, res.responseText);
+        try { onSuccess(parseTranslateResponse(endpoint, res.responseText)); } catch (err) { onFail('parse', res.responseText); }
       },
-      onerror: function (err) {
-        onFail('network', err);
-      },
-      ontimeout: function () {
-        onFail('timeout', null);
-      },
+      onerror: (err) => onFail('network', err),
+      ontimeout: () => onFail('timeout', null),
     });
   }
 
   function callTranslateApi(text, lang, onSuccess, onFail) {
-    // primaryが429ならfallbackへ切替
-    requestTranslateOnce(
-      'primary',
-      text,
-      lang,
-      onSuccess,
-      (status) => {
-        if (status === 429) {
-          requestTranslateOnce(
-            'fallback',
-            text,
-            lang,
-            onSuccess,
-            (status2) => {
-              onFail(
-                status2 === 429
-                  ? 'Rate limited — please wait a moment and try again'
-                  : 'HTTP ' + status2
-              );
-            }
-          );
-        } else {
-          onFail(status === 'parse' ? 'Parse error' : status === 'network' ? 'Network error' : status === 'timeout' ? 'Timeout' : 'HTTP ' + status);
-        }
+    requestTranslateOnce('primary', text, lang, onSuccess, (status) => {
+      if (status === 429) {
+        requestTranslateOnce('fallback', text, lang, onSuccess, (status2) => {
+          onFail(status2 === 429 ? 'Rate limited — please wait a moment' : 'HTTP ' + status2);
+        });
+      } else {
+        onFail(status === 'parse' ? 'Parse error' : status === 'network' ? 'Network error' : status === 'timeout' ? 'Timeout' : 'HTTP ' + status);
       }
-    );
-  }
-
-  function getComposeEls() {
-    return Array.from(document.querySelectorAll(CONFIG.translate.composeSelector));
+    });
   }
 
   function getComposeText(el) {
@@ -1202,11 +910,7 @@
       return;
     }
     btn.style.display = '';
-    if (btn.dataset.ttState === 'loading') {
-      btn.textContent = `🌐 Translating... (${lang})`;
-    } else {
-      btn.textContent = `🌐 Insert translation (${lang})`;
-    }
+    btn.textContent = btn.dataset.ttState === 'loading' ? `🌐 Translating... (${lang})` : `🌐 Insert translation (${lang})`;
   }
 
   function refreshAllTranslateBtnLabels() {
@@ -1217,14 +921,10 @@
     if (el.tagName === 'TEXTAREA') {
       const current = el.value;
       const sep = current.endsWith('\n') || current === '' ? '' : '\n';
-      const nativeSetter = Object.getOwnPropertyDescriptor(
-        window.HTMLTextAreaElement.prototype,
-        'value'
-      ).set;
+      const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
       nativeSetter.call(el, current + sep + translatedText);
       el.dispatchEvent(new Event('input', { bubbles: true }));
     } else {
-      // contenteditable
       const br = document.createElement('br');
       const textNode = document.createTextNode(translatedText);
       el.appendChild(br);
@@ -1258,11 +958,10 @@
 
         btn.dataset.ttState = 'loading';
         updateComposeBtnLabel(btn);
-        const lang = translateLangSetting.get();
 
         callTranslateApi(
           text,
-          lang,
+          translateLangSetting.get(),
           (translated) => {
             btn.dataset.ttState = 'idle';
             updateComposeBtnLabel(btn);
@@ -1296,13 +995,8 @@
     });
   }
 
-  // ============================================================
-  // 複数画像のスワイプギャラリー
-  // ============================================================
-
-
+  // Swipe Gallery
   function findGalleryImages(article) {
-    // "Attached media" のimgを複数含むグリッドを探す(単一画像は対象外)
     const imgs = Array.from(article.querySelectorAll('img[alt="Attached media"]'));
     return imgs.length >= 2 ? imgs : [];
   }
@@ -1359,16 +1053,9 @@
       render(withTransition);
     }
 
-    prevBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      goTo(index - 1);
-    });
-    nextBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      goTo(index + 1);
-    });
+    prevBtn.addEventListener('click', (e) => { e.stopPropagation(); goTo(index - 1); });
+    nextBtn.addEventListener('click', (e) => { e.stopPropagation(); goTo(index + 1); });
 
-    // スワイプ操作
     let startX = 0;
     let currentX = 0;
     let dragging = false;
@@ -1393,21 +1080,15 @@
       dragging = false;
       const deltaX = currentX - startX;
       const threshold = window.innerWidth * 0.15;
-      if (deltaX > threshold && index > 0) {
-        goTo(index - 1);
-      } else if (deltaX < -threshold && index < images.length - 1) {
-        goTo(index + 1);
-      } else {
-        goTo(index);
-      }
+      if (deltaX > threshold && index > 0) goTo(index - 1);
+      else if (deltaX < -threshold && index < images.length - 1) goTo(index + 1);
+      else goTo(index);
     }
 
     track.addEventListener('pointerup', endDrag);
     track.addEventListener('pointercancel', endDrag);
 
-    overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) overlay.remove();
-    });
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
 
     function handleKeydown(e) {
       if (e.key === 'ArrowLeft') goTo(index - 1);
@@ -1454,25 +1135,16 @@
   }
 
   function processGalleryArticles(root = document) {
-    const articles = collectMatching(root, 'article');
-    articles.forEach(attachGalleryHandlers);
+    collectMatching(root, 'article').forEach(attachGalleryHandlers);
   }
 
-  // ============================================================
-  // インラインリプライ欄への@ハンドル自動入力
-  // ============================================================
-
-  // aria-labelからハンドルを抽出するユーティリティ
+  // Reply Prefill
   function extractHandleFromLabel(label) {
     const match = label.match(/^View @(.+?)(?:'s|'s) profile$/);
     return match ? match[1] : null;
   }
 
-  // textareaに対応するツイート投稿者ハンドルを取得する。
-  // インラインリプライ欄はarticle外(div[role="form"])に置かれるケースがあるため、
-  // 複数の経路で投稿者ボタンを探す。
   function findHandleForTextarea(textarea) {
-    // 経路1: textarea が article 内にある場合 (旧来の構造)
     const article = textarea.closest('article');
     if (article) {
       const btn = article.querySelector(':scope > div.flex.items-start.gap-3 > button[aria-label^="View @"]');
@@ -1480,11 +1152,8 @@
       if (handle) return handle;
     }
 
-    // 経路2: textarea が div[role="form"] 内にあり、その祖先に投稿者ボタンがある場合
-    // (引用ツイートへのインラインリプライ等)
     const form = textarea.closest('[role="form"]');
     if (form) {
-      // form の祖先を遡りながら "View @" ボタンを探す
       let el = form.parentElement;
       while (el && el !== document.body) {
         const btn = el.querySelector('button[aria-label^="View @"]');
@@ -1516,28 +1185,20 @@
       textarea.dataset.ttPrefillDone = '1';
       if (textarea.value.trim() !== '') return;
 
-      const nativeSetter = Object.getOwnPropertyDescriptor(
-        window.HTMLTextAreaElement.prototype,
-        'value'
-      ).set;
+      const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
       nativeSetter.call(textarea, `@${handle} `);
       textarea.dispatchEvent(new Event('input', { bubbles: true }));
       textarea.setSelectionRange(textarea.value.length, textarea.value.length);
     });
   }
 
-  // ============================================================
-  // DOM監視（最適化）
-  // ============================================================
-
+  // DOM Observer & Route Handling
   function handleAddedNode(node) {
     if (node.nodeType !== 1) return;
 
     if (node.matches?.('article')) processArticle(node);
     node.querySelectorAll?.('article').forEach(processArticle);
 
-    applyFontSizeToBodies(node);
-    applyFontSizeToComposers(node);
     applyAutoplaySetting(node);
     processComposeBoxes(node);
     processGalleryArticles(node);
@@ -1571,16 +1232,10 @@
       }
     });
 
-    observer.observe(document.body, {
-      childList: true,
-      subtree: true,
-    });
+    observer.observe(document.body, { childList: true, subtree: true });
   }
 
-  // ============================================================
-  // 初期化
-  // ============================================================
-
+  // Init
   function init() {
     loadOgpCacheFromStorage();
     applyStyles();
