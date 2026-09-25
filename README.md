@@ -5,6 +5,7 @@
 An enhancement for [app.tweet.app](https://app.tweet.app) that adds font size / content width adjustment, link preview cards, an always-visible composer, compose-time translation, a swipeable multi-photo gallery, and automatic `@handle` prefill for inline replies. All features are toggled from the app's own `/settings` page.
 
 2種類の配布形態があり、機能・設定項目・デフォルト値は完全に同一です。
+
 Two distribution formats are available, with identical features, settings, and defaults.
 
 | | userscript版 | Chrome拡張版 |
@@ -26,28 +27,38 @@ The userscript version has only been tested on **iPad Safari with the Tampermonk
 ## userscript版のインストール / Installing the userscript
 
 1. TampermonkeyをSafariに導入(App Store)
+   
    Install the Tampermonkey extension for Safari (App Store)
-2. Tampermonkeyメニュー→「新規スクリプトを追加」
+3. Tampermonkeyメニュー→「新規スクリプトを追加」
+   
    Tampermonkey menu → "Create a new script"
-3. `/userscript/tweet-app-enhancer_user.js` の内容を貼り付けて保存(Cmd+S)
+5. `/userscript/tweet-app-enhancer_user.js` の内容を貼り付けて保存(Cmd+S)
+   
    Paste the contents of `/userscript/tweet-app-enhancer_user.js` and save (Cmd+S)
-4. `app.tweet.app` を開くと自動的に有効化
+7. `app.tweet.app` を開くと自動的に有効化
+   
    Open `app.tweet.app` — the script activates automatically
 
 ## Chrome拡張版のインストール / Installing the Chrome extension
 
 Tampermonkey不要で、`/chrome-extension` フォルダをそのままパッケージ化されていない拡張機能として読み込みます。
+
 No Tampermonkey required — load the `/chrome-extension` folder directly as an unpacked extension.
 
 1. このリポジトリをクローンまたはダウンロード
+   
    Clone or download this repository
-2. `chrome://extensions` を開く
+3. `chrome://extensions` を開く
+   
    Open `chrome://extensions`
-3. 右上の「デベロッパーモード」をONにする
+5. 右上の「デベロッパーモード」をONにする
+   
    Turn on "Developer mode" (top right)
-4. 「パッケージ化されていない拡張機能を読み込む」をクリックし、`/chrome-extension` フォルダを選択
+7. 「パッケージ化されていない拡張機能を読み込む」をクリックし、`/chrome-extension` フォルダを選択
+   
    Click "Load unpacked" and select the `/chrome-extension` folder
-5. `app.tweet.app` を開くと自動的に有効化
+9. `app.tweet.app` を開くと自動的に有効化
+    
    Open `app.tweet.app` — the extension activates automatically
 
 ### Chrome拡張版の構成 / Chrome extension contents
@@ -57,6 +68,7 @@ No Tampermonkey required — load the `/chrome-extension` folder directly as an 
 - `background.js` — 翻訳API・リンク先ページのfetchを中継するservice worker / service worker that relays fetches for the translate API and linked pages
 
 userscript版との技術的な違いは通信・保存方式のみです: `GM_setValue`/`GM_getValue` → `chrome.storage.local`、`GM_xmlhttpRequest` → `background.js`経由の`fetch`。
+
 The only technical differences from the userscript are storage and networking: `GM_setValue`/`GM_getValue` → `chrome.storage.local`, and `GM_xmlhttpRequest` → `fetch` relayed through `background.js`.
 
 ---
@@ -64,6 +76,7 @@ The only technical differences from the userscript are storage and networking: `
 ## 機能と設定 / Features & Settings
 
 `/settings` ページの「Display」セクション内に **Tweet.app Enhancements** というカードが追加されます(userscript版・Chrome拡張版共通)。
+
 A **Tweet.app Enhancements** card is added under the "Display" section of the `/settings` page (identical in both versions).
 
 | 設定 / Setting | 説明 / Description | 初期値 / Default |
@@ -84,17 +97,22 @@ The compose box also gets a translate button: tap it to preview a translation in
 ## 仕組み / How it works
 
 - 投稿翻訳はGoogle翻訳の非公式エンドポイント(`translate.googleapis.com`)を使用し、レート制限(HTTP 429)時は別エンドポイント(`clients5.google.com`)へ自動フォールバックします。
+  
   Translation uses Google Translate's unofficial endpoint (`translate.googleapis.com`), with automatic fallback to a secondary endpoint (`clients5.google.com`) when rate-limited (HTTP 429).
 - リンクカードはfetchしたページのOGPタグを解析し、キャッシュします(userscript版: GM storage / Chrome拡張版: `chrome.storage.local`)。
+  
   Link cards are built by fetching and parsing OGP tags from the linked page, then cached (userscript: GM storage / Chrome extension: `chrome.storage.local`).
 
 ## 注意 / Notes
 
 - 非公式のGoogle翻訳エンドポイントに依存しているため、Google側の仕様変更で翻訳機能が動作しなくなる可能性があります。
+  
   Relies on an unofficial Google Translate endpoint and may break if Google changes its response format.
 - `app.tweet.app` のDOM構造変更により、機能の一部またはすべてが動作しなくなる可能性があります。
+  
   Features may break if `app.tweet.app` changes its DOM structure.
 - Issue・PR等によるサポートは行っていません。
+  
   No support is provided via issues or pull requests.
 
 ## License
