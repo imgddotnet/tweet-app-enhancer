@@ -59,9 +59,11 @@
 
   const CONFIG = {
     font: {
-      key: 'tweetapp_font_size_px',
-      default: 15,
-      presets: [15, 18, 22],
+      key: 'tweetapp_article_scale',
+      default: 1,
+      presets: [1, 1.10, 1.20, 1.25, 1.30, 1.50],
+      labels: ['Default', '', '', '', '', ''],
+      composerBasePx: 15, // 投稿欄の入力テキストはズーム対象外なのでpx換算して適用
     },
     media: {
       key: 'tweetapp_media_width_pct',
@@ -243,64 +245,6 @@
   // CSS定義（動的な値を含むスタイルは applyStyles 側で生成）
   // ============================================================
 
-  const CHOICE_PANEL_CSS = `
-    #tweetapp-choice-overlay {
-      position: fixed;
-      inset: 0;
-      background: rgba(0,0,0,0.4);
-      z-index: 10000;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-    #tweetapp-choice-panel {
-      background: #fff;
-      border-radius: 14px;
-      min-width: 240px;
-      max-width: 90vw;
-      overflow: hidden;
-      box-shadow: 0 4px 20px rgba(0,0,0,0.3);
-      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-    }
-    #tweetapp-choice-panel .tweetapp-choice-title {
-      padding: 14px 16px 8px;
-      font-size: 13px;
-      color: #536471;
-      border-bottom: 1px solid #eee;
-    }
-    #tweetapp-choice-panel .tweetapp-choice-item {
-      display: block;
-      width: 100%;
-      text-align: left;
-      padding: 14px 16px;
-      font-size: 16px;
-      color: #0f1419;
-      background: #fff;
-      border: none;
-      border-bottom: 1px solid #eee;
-    }
-    #tweetapp-choice-panel .tweetapp-choice-item:last-of-type {
-      border-bottom: none;
-    }
-    #tweetapp-choice-panel .tweetapp-choice-item:active {
-      background: #f0f3f4;
-    }
-    #tweetapp-choice-panel .tweetapp-choice-item.tweetapp-choice-current {
-      color: #1d9bf0;
-      font-weight: 600;
-    }
-    #tweetapp-choice-panel .tweetapp-choice-cancel {
-      display: block;
-      width: 100%;
-      text-align: center;
-      padding: 14px 16px;
-      font-size: 15px;
-      color: #536471;
-      background: #f7f8f8;
-      border: none;
-    }
-  `;
-
   const SETTINGS_PANEL_CSS = `
     .tt-toggle-switch {
       width: 44px;
@@ -340,6 +284,17 @@
       color: var(--color-tl-app-text-muted, #64748b);
       cursor: pointer;
       white-space: nowrap;
+    }
+    select.tt-settings-value-btn {
+      -webkit-appearance: none;
+      appearance: none;
+      padding-right: 24px;
+      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2'><path d='M6 9l6 6 6-6'/></svg>");
+      background-repeat: no-repeat;
+      background-position: right 6px center;
+      background-size: 14px;
+      max-width: 160px;
+      text-overflow: ellipsis;
     }
   `;
 
@@ -486,27 +441,17 @@
       if (document.documentElement) document.documentElement.appendChild(styleEl);
     }
 
-    const fontSize = fontSizeSetting.get();
+    const scale = fontSizeSetting.get();
     const mediaPct = mediaPctSetting.get();
     const composerVisible = composerVisibleSetting.get();
     const onSettingsPage = location.pathname.startsWith('/settings');
 
     styleEl.textContent = `
-      /* ツイート本文のフォントサイズ */
-      article p {
-        font-size: ${fontSize}px !important;
-        line-height: 1.5 !important;
-      }
-
-      /* 入力テキストエリアおよび裏側のミラー表示要素（文字＆カーソル位置ずれ防止） */
-      textarea#public-tweet-input,
-      textarea#public-modal-tweet-input,
-      textarea[name="compose-text"],
-      textarea,
-      div:has(> textarea) [aria-hidden="true"],
-      div:has(> textarea) div {
-        font-size: ${fontSize}px !important;
-        line-height: 1.5 !important;
+      /* ツイート表示全体(アバター・余白・アイコン含む)の拡大縮小。
+         フォントだけでなくレイアウト全体をスケールするためzoomを使う
+         (transform: scaleだとクリック領域や折り返しがズレるため不採用) */
+      article {
+        zoom: ${scale};
       }
 
       /* 画像・動画・リンクカードの表示幅(記事内・News/Sportsタブのリンクカードに適用)。
@@ -525,100 +470,31 @@
         display: none !important;
       }`}
 
-      ${CHOICE_PANEL_CSS}
       ${TRANSLATE_BTN_CSS}
       ${GALLERY_CSS}
       ${SETTINGS_PANEL_CSS}
       ${NOTIFICATION_TOAST_CSS}
     `;
 
-    applyFontSizeToBodies();
     applyFontSizeToComposers();
   }
 
-  function setFontStyle(el, fontSize) {
-    el.style.setProperty('font-size', `${fontSize}px`, 'important');
+  function setFontStyle(el, fontSizePx) {
+    el.style.setProperty('font-size', `${fontSizePx}px`, 'important');
     el.style.setProperty('line-height', '1.5', 'important');
   }
 
-  function applyFontSizeToBodies(root = document) {
-    const fontSize = fontSizeSetting.get();
-    collectMatching(root, 'article p').forEach((p) => setFontStyle(p, fontSize));
-  }
-
-  // 入力欄は裏側のミラー要素も揃えないと文字とカーソル位置がずれる
+  // 投稿欄はarticleのzoom対象外(入力中の見た目が変わると使いづらいため)。
+  // article側のスケール比率をpxに換算して同じ体感サイズになるよう適用する。
+  // 入力欄は裏側のミラー要素も揃えないと文字とカーソル位置がずれる。
   // collectMatchingではなくquerySelectorAllを使う: rootがtextarea自身の場合に
   // parentElement全体をstyle書き換えしてReactのvalue状態を乱すのを防ぐため
   function applyFontSizeToComposers(root = document) {
-    const fontSize = fontSizeSetting.get();
+    const fontSizePx = Math.round(CONFIG.font.composerBasePx * fontSizeSetting.get());
     root.querySelectorAll?.(CONFIG.composer.textareaSelector).forEach((textarea) => {
-      setFontStyle(textarea, fontSize);
-      textarea.parentElement?.querySelectorAll('*').forEach((el) => setFontStyle(el, fontSize));
+      setFontStyle(textarea, fontSizePx);
+      textarea.parentElement?.querySelectorAll('*').forEach((el) => setFontStyle(el, fontSizePx));
     });
-  }
-
-  // ============================================================
-  // 選択パネル
-  // ============================================================
-
-  function showChoicePanel(title, items, currentIndex, onSelect) {
-    const overlay = document.createElement('div');
-    overlay.id = 'tweetapp-choice-overlay';
-
-    const panel = document.createElement('div');
-    panel.id = 'tweetapp-choice-panel';
-
-    const titleEl = document.createElement('div');
-    titleEl.className = 'tweetapp-choice-title';
-    titleEl.textContent = title;
-    panel.appendChild(titleEl);
-
-    items.forEach((label, i) => {
-      const isCurrent = i === currentIndex;
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'tweetapp-choice-item' + (isCurrent ? ' tweetapp-choice-current' : '');
-      btn.textContent = label + (isCurrent ? ' (current)' : '');
-      btn.addEventListener('click', () => {
-        overlay.remove();
-        onSelect(i);
-      });
-      panel.appendChild(btn);
-    });
-
-    const cancelBtn = document.createElement('button');
-    cancelBtn.type = 'button';
-    cancelBtn.className = 'tweetapp-choice-cancel';
-    cancelBtn.textContent = 'Cancel';
-    cancelBtn.addEventListener('click', () => overlay.remove());
-    panel.appendChild(cancelBtn);
-
-    overlay.appendChild(panel);
-    overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) overlay.remove();
-    });
-    document.body.appendChild(overlay);
-  }
-
-  function chooseFontSize() {
-    const presets = CONFIG.font.presets;
-    const items = presets.map((px) => `${px}px`);
-    const curIdx = presets.indexOf(fontSizeSetting.get());
-    showChoicePanel('Select font size', items, curIdx, (i) => fontSizeSetting.set(presets[i]));
-  }
-
-  function chooseMediaWidth() {
-    const presets = CONFIG.media.presets;
-    const items = presets.map((m) => `${m.label}(${m.pct}%)`);
-    const curIdx = presets.findIndex((m) => m.pct === mediaPctSetting.get());
-    showChoicePanel('Select content width', items, curIdx, (i) => mediaPctSetting.set(presets[i].pct));
-  }
-
-  function chooseTranslateLang() {
-    const langs = CONFIG.translate.langs;
-    const items = langs.map(([, label]) => label);
-    const curIdx = langs.findIndex(([code]) => code === translateLangSetting.get());
-    showChoicePanel('Select translate target language', items, curIdx, (i) => translateLangSetting.set(langs[i][0]));
   }
 
   function clearOgpCache() {
@@ -681,24 +557,29 @@
     return { el: btn, render };
   }
 
-  function createActionValueControl(getLabel, onClick) {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'tt-settings-value-btn';
+  // options: [{value, label}, ...]
+  function createSelectControl(options, getValue, setValue) {
+    const select = document.createElement('select');
+    select.className = 'tt-settings-value-btn';
+
+    options.forEach(({ value, label }) => {
+      const opt = document.createElement('option');
+      opt.value = value;
+      opt.textContent = label;
+      select.appendChild(opt);
+    });
 
     function render() {
-      btn.textContent = getLabel();
+      select.value = getValue();
     }
     render();
 
-    btn.addEventListener('click', () => {
-      onClick();
-      // showChoicePanelは非同期で選択されるため、少し遅延して再描画
-      setTimeout(render, 50);
-      setTimeout(render, 400);
+    select.addEventListener('change', () => {
+      setValue(select.value);
+      render();
     });
 
-    return { el: btn, render };
+    return { el: select, render };
   }
 
   function buildSettingsSection() {
@@ -718,20 +599,22 @@
     const card = document.createElement('div');
     card.className = 'rounded-2xl border border-tl-app-border overflow-hidden divide-y divide-tl-app-border';
 
-    // Font size
-    const fontSizeCtrl = createActionValueControl(
-      () => `${fontSizeSetting.get()}px`,
-      chooseFontSize
+    // Article scale
+    const fontSizeCtrl = createSelectControl(
+      CONFIG.font.presets.map((scale) => ({
+        value: String(scale),
+        label: scale === 1 ? '100% (Default)' : `${Math.round(scale * 100)}%`,
+      })),
+      () => String(fontSizeSetting.get()),
+      (v) => fontSizeSetting.set(parseFloat(v))
     );
-    card.appendChild(createSettingsRow('Font size', 'Text size for tweets', fontSizeCtrl.el));
+    card.appendChild(createSettingsRow('Article & Compose zoom', 'Zoom level for tweet articles and compose box', fontSizeCtrl.el));
 
     // Content width
-    const mediaWidthCtrl = createActionValueControl(
-      () => {
-        const m = CONFIG.media.presets.find((p2) => p2.pct === mediaPctSetting.get());
-        return m ? `${m.label} (${m.pct}%)` : `${mediaPctSetting.get()}%`;
-      },
-      chooseMediaWidth
+    const mediaWidthCtrl = createSelectControl(
+      CONFIG.media.presets.map((m) => ({ value: String(m.pct), label: `${m.label} (${m.pct}%)` })),
+      () => String(mediaPctSetting.get()),
+      (v) => mediaPctSetting.set(parseInt(v, 10))
     );
     card.appendChild(createSettingsRow('Content width', 'Width of media and content area', mediaWidthCtrl.el));
 
@@ -740,12 +623,10 @@
     card.appendChild(createSettingsRow('Reply @handle prefill', 'Prefill @handle when replying inline to a tweet', replyPrefillToggle.el));
 
     // Translate target language
-    const translateCtrl = createActionValueControl(
-      () => {
-        const l = CONFIG.translate.langs.find(([code]) => code === translateLangSetting.get());
-        return l ? l[1] : translateLangSetting.get();
-      },
-      chooseTranslateLang
+    const translateCtrl = createSelectControl(
+      CONFIG.translate.langs.map(([code, label]) => ({ value: code, label })),
+      () => translateLangSetting.get(),
+      (v) => translateLangSetting.set(v)
     );
     card.appendChild(createSettingsRow('Translate target language', 'Language used when translating your draft before posting', translateCtrl.el));
 
@@ -765,21 +646,10 @@
     const notificationToastToggle = createToggleControl(notificationToastEnabledSetting, 'ON', 'OFF');
     card.appendChild(createSettingsRow('Notification popup', 'Show a popup when your notification count increases', notificationToastToggle.el));
 
-    const notificationSoundCtrl = createActionValueControl(
-      () => {
-        const s = notificationSoundSetting.get();
-        return s.charAt(0).toUpperCase() + s.slice(1);
-      },
-      () => {
-        const sounds = CONFIG.notificationToast.sounds;
-        const curIdx = sounds.indexOf(notificationSoundSetting.get());
-        showChoicePanel(
-          'Select notification sound',
-          sounds.map((s) => s.charAt(0).toUpperCase() + s.slice(1)),
-          curIdx,
-          (i) => notificationSoundSetting.set(sounds[i])
-        );
-      }
+    const notificationSoundCtrl = createSelectControl(
+      CONFIG.notificationToast.sounds.map((s) => ({ value: s, label: s.charAt(0).toUpperCase() + s.slice(1) })),
+      () => notificationSoundSetting.get(),
+      (v) => notificationSoundSetting.set(v)
     );
     card.appendChild(createSettingsRow('Notification sound', 'Sound to play with the notification popup', notificationSoundCtrl.el));
 
@@ -1561,7 +1431,6 @@
     if (node.matches?.('article')) processArticle(node);
     node.querySelectorAll?.('article').forEach(processArticle);
 
-    applyFontSizeToBodies(node);
     applyFontSizeToComposers(node);
     applyAutoplaySetting(node);
     processComposeBoxes(node);
