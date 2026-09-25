@@ -92,6 +92,7 @@ A **Tweet.app Enhancements** card is added under the "Display" section of the `/
 | Link card cache | リンクカードのキャッシュをクリア / Clear cached link preview data | (操作ボタン / action button) |
 
 投稿欄には翻訳ボタンも追加され、押すと選択言語への翻訳をプレビューし、再度押すと投稿欄末尾に挿入します。
+
 The compose box also gets a translate button: tap it to preview a translation in the target language, tap the preview to insert it at the end of your draft.
 
 ## 仕組み / How it works
