@@ -17,19 +17,17 @@
 (function () {
   'use strict';
 
+  // ============================================================
   // CONFIG
+  // ============================================================
+
   const CONFIG = {
     font: {
-      key: 'tweetapp_article_zoom_pct',
-      default: 100,
-      presets: [
-        { pct: 100, label: '100% (Default)' },
-        { pct: 110, label: '110%' },
-        { pct: 120, label: '120%' },
-        { pct: 125, label: '125%' },
-        { pct: 130, label: '130%' },
-        { pct: 150, label: '150%' },
-      ],
+      key: 'tweetapp_article_scale',
+      default: 1,
+      presets: [1, 1.10, 1.20, 1.25, 1.30, 1.50],
+      labels: ['Default', '', '', '', '', ''],
+      composerBasePx: 15, // 投稿欄の入力テキストはズーム対象外なのでpx換算して適用
     },
     media: {
       key: 'tweetapp_media_width_pct',
@@ -95,7 +93,11 @@
     },
   };
 
-  // Settings State
+  // ============================================================
+  // Settings
+  // ============================================================
+
+  // root自身がセレクタに一致する場合も含めて要素を収集する
   function collectMatching(root, selector) {
     const matches = root instanceof Element && root.matches?.(selector) ? [root] : [];
     return matches.concat(Array.from(root.querySelectorAll?.(selector) || []));
@@ -127,7 +129,13 @@
   const notificationToastEnabledSetting = createSetting(CONFIG.notificationToast.enabledKey, CONFIG.notificationToast.enabledDefault, () => {});
   const notificationSoundSetting = createSetting(CONFIG.notificationToast.soundKey, CONFIG.notificationToast.soundDefault, () => {});
 
-  // Video / GIF Autoplay
+  // ============================================================
+  // 動画・GIF自動再生制御
+  // ============================================================
+  // 挿入時にautoplay属性を外してpauseし、OFF中はplayイベントも監視して止める。
+  // ただし動画への直接操作を検知したらユーザー管理下として以後は触れない（WeakSet）。
+  // 制約: ネイティブコントロール経由の操作がvideoまで伝播しない環境では手動再生も止まる。
+
   const userTouchedVideos = new WeakSet();
 
   function isTrackedVideo(node) {
@@ -149,7 +157,7 @@
   function stopVideo(video, force = false) {
     if (!(video instanceof HTMLVideoElement)) return;
     bindVideoGestureListeners(video);
-    if (!force && userTouchedVideos.has(video)) return;
+    if (!force && userTouchedVideos.has(video)) return; // ユーザー管理下の動画には触れない
     video.autoplay = false;
     video.removeAttribute('autoplay');
     video.pause();
@@ -164,20 +172,31 @@
     if (video.paused) video.play().catch(() => {});
   }
 
+  function applyAutoplayToVideo(video, force = false) {
+    if (!isTrackedVideo(video)) return;
+    if (autoplayEnabledSetting.get()) startVideo(video);
+    else stopVideo(video, force);
+  }
+
   function applyAutoplaySetting(root = document, force = false) {
     const enabled = autoplayEnabledSetting.get();
     const videos = collectMatching(root, 'article video');
+
     videos.forEach((video) => {
       if (enabled) startVideo(video);
       else stopVideo(video, force);
     });
   }
 
+  // 属性ベースの抑止では防げない、JS経由の自動再生に対応
   document.addEventListener(
     'play',
     (event) => {
       const video = event.target;
-      if (!isTrackedVideo(video) || autoplayEnabledSetting.get() || userTouchedVideos.has(video)) return;
+      if (!isTrackedVideo(video)) return;
+      if (autoplayEnabledSetting.get()) return;
+      if (userTouchedVideos.has(video)) return;
+
       video.pause();
       video.autoplay = false;
       video.removeAttribute('autoplay');
@@ -185,7 +204,11 @@
     true
   );
 
-  // CSS Styles
+
+  // ============================================================
+  // CSS定義（動的な値を含むスタイルは applyStyles 側で生成）
+  // ============================================================
+
   const SETTINGS_PANEL_CSS = `
     .tt-toggle-switch {
       width: 44px;
@@ -226,20 +249,16 @@
       cursor: pointer;
       white-space: nowrap;
     }
-    .tt-settings-select {
-      font-size: 13px;
-      font-weight: 700;
-      padding: 6px 12px;
-      border-radius: 9999px;
-      border: 1px solid var(--color-tl-app-border, #d1d5db);
-      background: var(--color-tl-app-card, transparent);
-      color: var(--color-tl-app-text-muted, #64748b);
-      cursor: pointer;
-      outline: none;
-    }
-    .tt-settings-select option {
-      background: var(--color-tl-app-card, #ffffff);
-      color: var(--color-tl-app-text, #0f1419);
+    select.tt-settings-value-btn {
+      -webkit-appearance: none;
+      appearance: none;
+      padding-right: 24px;
+      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2'><path d='M6 9l6 6 6-6'/></svg>");
+      background-repeat: no-repeat;
+      background-position: right 6px center;
+      background-size: 14px;
+      max-width: 160px;
+      text-overflow: ellipsis;
     }
   `;
 
@@ -375,6 +394,10 @@
     #tweetapp-gallery-next { right: 12px; }
   `;
 
+  // ============================================================
+  // スタイル適用
+  // ============================================================
+
   function applyStyles() {
     if (!styleEl) {
       styleEl = document.createElement('style');
@@ -382,17 +405,21 @@
       if (document.documentElement) document.documentElement.appendChild(styleEl);
     }
 
-    const zoomPct = fontSizeSetting.get();
+    const scale = fontSizeSetting.get();
     const mediaPct = mediaPctSetting.get();
     const composerVisible = composerVisibleSetting.get();
     const onSettingsPage = location.pathname.startsWith('/settings');
 
     styleEl.textContent = `
-      article,
-      div:has(> textarea) {
-        zoom: ${zoomPct}% !important;
+      /* ツイート表示全体(アバター・余白・アイコン含む)の拡大縮小。
+         フォントだけでなくレイアウト全体をスケールするためzoomを使う
+         (transform: scaleだとクリック領域や折り返しがズレるため不採用) */
+      article {
+        zoom: ${scale};
       }
 
+      /* 画像・動画・リンクカードの表示幅(記事内・News/Sportsタブのリンクカードに適用)。
+         /settings ページはカードUIが同じクラスを使い回しているため対象外にする */
       ${onSettingsPage ? '' : `
       div.rounded-2xl.overflow-hidden,
       div.${CONFIG.linkCard.className} {
@@ -401,6 +428,7 @@
         margin-right: auto !important;
       }`}
 
+      /* 常時表示の投稿欄（フィード最上部のみ） */
       ${composerVisible ? '' : `
       ${CONFIG.composer.containerSelector} {
         display: none !important;
@@ -411,6 +439,26 @@
       ${SETTINGS_PANEL_CSS}
       ${NOTIFICATION_TOAST_CSS}
     `;
+
+    applyFontSizeToComposers();
+  }
+
+  function setFontStyle(el, fontSizePx) {
+    el.style.setProperty('font-size', `${fontSizePx}px`, 'important');
+    el.style.setProperty('line-height', '1.5', 'important');
+  }
+
+  // 投稿欄はarticleのzoom対象外(入力中の見た目が変わると使いづらいため)。
+  // article側のスケール比率をpxに換算して同じ体感サイズになるよう適用する。
+  // 入力欄は裏側のミラー要素も揃えないと文字とカーソル位置がずれる。
+  // collectMatchingではなくquerySelectorAllを使う: rootがtextarea自身の場合に
+  // parentElement全体をstyle書き換えしてReactのvalue状態を乱すのを防ぐため
+  function applyFontSizeToComposers(root = document) {
+    const fontSizePx = Math.round(CONFIG.font.composerBasePx * fontSizeSetting.get());
+    root.querySelectorAll?.(CONFIG.composer.textareaSelector).forEach((textarea) => {
+      setFontStyle(textarea, fontSizePx);
+      textarea.parentElement?.querySelectorAll('*').forEach((el) => setFontStyle(el, fontSizePx));
+    });
   }
 
   function clearOgpCache() {
@@ -419,7 +467,11 @@
     alert('Link card cache cleared');
   }
 
-  // Settings Panel UI
+  // ============================================================
+  // /settings ページへの設定パネル埋め込み
+  // ============================================================
+
+
   function createSettingsRow(title, description, controlEl) {
     const row = document.createElement('div');
     row.className = 'flex items-center justify-between gap-3 px-4 py-3.5';
@@ -469,21 +521,29 @@
     return { el: btn, render };
   }
 
-  function createSelectControl(options, setting, parseFn = (v) => v) {
+  // options: [{value, label}, ...]
+  function createSelectControl(options, getValue, setValue) {
     const select = document.createElement('select');
-    select.className = 'tt-settings-select';
+    select.className = 'tt-settings-value-btn';
 
     options.forEach(({ value, label }) => {
       const opt = document.createElement('option');
-      opt.value = String(value);
+      opt.value = value;
       opt.textContent = label;
       select.appendChild(opt);
     });
 
-    select.value = String(setting.get());
-    select.addEventListener('change', (e) => setting.set(parseFn(e.target.value)));
+    function render() {
+      select.value = getValue();
+    }
+    render();
 
-    return { el: select };
+    select.addEventListener('change', () => {
+      setValue(select.value);
+      render();
+    });
+
+    return { el: select, render };
   }
 
   function buildSettingsSection() {
@@ -503,19 +563,22 @@
     const card = document.createElement('div');
     card.className = 'rounded-2xl border border-tl-app-border overflow-hidden divide-y divide-tl-app-border';
 
-    // Article & Compose zoom
+    // Article scale
     const fontSizeCtrl = createSelectControl(
-      CONFIG.font.presets.map((item) => ({ value: item.pct, label: item.label })),
-      fontSizeSetting,
-      Number
+      CONFIG.font.presets.map((scale) => ({
+        value: String(scale),
+        label: scale === 1 ? '100% (Default)' : `${Math.round(scale * 100)}%`,
+      })),
+      () => String(fontSizeSetting.get()),
+      (v) => fontSizeSetting.set(parseFloat(v))
     );
-    card.appendChild(createSettingsRow('Article & Compose zoom', 'Zoom level for tweet articles and compose boxes (%)', fontSizeCtrl.el));
+    card.appendChild(createSettingsRow('Article & Compose zoom', 'Zoom level for tweet articles and compose box', fontSizeCtrl.el));
 
     // Content width
     const mediaWidthCtrl = createSelectControl(
-      CONFIG.media.presets.map((m) => ({ value: m.pct, label: `${m.label} (${m.pct}%)` })),
-      mediaPctSetting,
-      Number
+      CONFIG.media.presets.map((m) => ({ value: String(m.pct), label: `${m.label} (${m.pct}%)` })),
+      () => String(mediaPctSetting.get()),
+      (v) => mediaPctSetting.set(parseInt(v, 10))
     );
     card.appendChild(createSettingsRow('Content width', 'Width of media and content area', mediaWidthCtrl.el));
 
@@ -526,7 +589,8 @@
     // Translate target language
     const translateCtrl = createSelectControl(
       CONFIG.translate.langs.map(([code, label]) => ({ value: code, label })),
-      translateLangSetting
+      () => translateLangSetting.get(),
+      (v) => translateLangSetting.set(v)
     );
     card.appendChild(createSettingsRow('Translate target language', 'Language used when translating your draft before posting', translateCtrl.el));
 
@@ -542,16 +606,14 @@
     const autoplayToggle = createToggleControl(autoplayEnabledSetting, 'ON', 'OFF');
     card.appendChild(createSettingsRow('Video/GIF autoplay', 'Automatically play videos and GIFs while scrolling', autoplayToggle.el));
 
-    // Notification toast & sound
+    // Notification toast + sound
     const notificationToastToggle = createToggleControl(notificationToastEnabledSetting, 'ON', 'OFF');
     card.appendChild(createSettingsRow('Notification popup', 'Show a popup when your notification count increases', notificationToastToggle.el));
 
     const notificationSoundCtrl = createSelectControl(
-      CONFIG.notificationToast.sounds.map((s) => ({
-        value: s,
-        label: s.charAt(0).toUpperCase() + s.slice(1),
-      })),
-      notificationSoundSetting
+      CONFIG.notificationToast.sounds.map((s) => ({ value: s, label: s.charAt(0).toUpperCase() + s.slice(1) })),
+      () => notificationSoundSetting.get(),
+      (v) => notificationSoundSetting.set(v)
     );
     card.appendChild(createSettingsRow('Notification sound', 'Sound to play with the notification popup', notificationSoundCtrl.el));
 
@@ -573,34 +635,53 @@
   }
 
   function injectSettingsSection() {
-    if (!location.pathname.startsWith('/settings') || document.getElementById('tweetapp-enhancements-section')) return;
+    if (!location.pathname.startsWith('/settings')) return;
+    if (document.getElementById('tweetapp-enhancements-section')) return;
 
+    // "Display" 見出しを目印に、同じflex-col gap-5コンテナへ追記
     const displayHeading = Array.from(document.querySelectorAll('h4')).find(
       (h) => h.textContent.trim() === 'Display'
     );
     const container = displayHeading?.closest('.flex.flex-col.gap-5');
-    if (container) container.appendChild(buildSettingsSection());
+    if (!container) return;
+
+    container.appendChild(buildSettingsSection());
   }
 
-  // Notifications
+  // ============================================================
+  // 通知バッジ増加のポップアップ通知
+  // ============================================================
+  // サイドバーのNotificationsバッジ数をポーリングし、増加時にトーストと通知音を出す。
+  // バッジ更新の契機が多様でDOM変化を掴みにくいため、MutationObserverではなくポーリング。
+
   let lastNotificationCount = null;
   let audioCtx = null;
 
-  function unlockAudio() {
-    if (!audioCtx) {
-      try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { return; }
-    }
-    if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
-  }
-
-  ['pointerdown', 'keydown', 'touchstart'].forEach((eventName) => {
-    document.addEventListener(eventName, unlockAudio, { capture: true, once: true, passive: true });
-  });
-
+  // AudioContextはユーザー操作の中で初めて呼ばれた時に生成する。
+  // ページロード時やcontent script初期化時に生成すると自動再生ポリシー違反になる。
   function ensureAudioCtx() {
-    return audioCtx?.state === 'running' ? audioCtx : null;
+    if (!audioCtx) {
+      try {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      } catch (e) {
+        return null;
+      }
+    }
+    // resume()はPromiseを返す。ユーザー操作を伴わない呼び出し(ポーリング等)では
+    // 拒否されることがあるため、未処理のPromise拒否にならないよう必ず捕捉する。
+    if (audioCtx.state === 'suspended') {
+      audioCtx.resume().catch(() => {});
+    }
+    return audioCtx;
   }
 
+  // ページ上でのユーザーの最初の操作をきっかけにresumeを試みておく。
+  // ポーリングによる自動チェックだけではsuspendedのまま鳴らせないための保険。
+  document.addEventListener('click', ensureAudioCtx, { once: true, capture: true });
+  document.addEventListener('keydown', ensureAudioCtx, { once: true, capture: true });
+
+  // 短い正弦波を鳴らす共通ルーティン
+  // freq: Hz, startTime: ctx.currentTime基準の開始秒, duration: 秒, gain: 0~1
   function playTone(ctx, freq, startTime, duration, gain = 0.35) {
     const osc = ctx.createOscillator();
     const env = ctx.createGain();
@@ -615,6 +696,7 @@
     osc.stop(startTime + duration + 0.05);
   }
 
+  // マリンバ風: サイン波にトレモロ(高調波)を重ねて木質感を出す
   function playMarimbaNote(ctx, freq, startTime, gain = 0.3) {
     [1, 4, 10].forEach((harmonic, i) => {
       const g = gain / (i + 1);
@@ -632,6 +714,7 @@
     });
   }
 
+  // ベル風: 倍音を複数重ねてメタリックな余韻を出す
   function playBellNote(ctx, freq, startTime, gain = 0.25) {
     [1, 2.756, 5.404, 7].forEach((ratio, i) => {
       const osc = ctx.createOscillator();
@@ -651,21 +734,26 @@
 
   const SOUND_PLAYERS = {
     none: () => {},
+    // 明るい3音上昇チャイム(C4→E4→G4)
     chime: () => {
       const ctx = ensureAudioCtx(); if (!ctx) return;
       const t = ctx.currentTime;
       [261.63, 329.63, 392.00].forEach((freq, i) => playTone(ctx, freq, t + i * 0.12, 0.35));
     },
+    // やわらかい水滴音: 高めの音を素早くフェードアウト
     drop: () => {
       const ctx = ensureAudioCtx(); if (!ctx) return;
-      playTone(ctx, 880, ctx.currentTime, 0.18, 0.3);
+      const t = ctx.currentTime;
+      playTone(ctx, 880, t, 0.18, 0.3);
     },
+    // マリンバ風2音下降(G4→E4)
     marimba: () => {
       const ctx = ensureAudioCtx(); if (!ctx) return;
       const t = ctx.currentTime;
       playMarimbaNote(ctx, 392.00, t);
       playMarimbaNote(ctx, 329.63, t + 0.15);
     },
+    // ベル風2音上昇(E4→G4)
     bell: () => {
       const ctx = ensureAudioCtx(); if (!ctx) return;
       const t = ctx.currentTime;
@@ -675,7 +763,13 @@
   };
 
   function playNotificationSound() {
-    try { SOUND_PLAYERS[notificationSoundSetting.get()]?.(); } catch (e) {}
+    try {
+      ensureAudioCtx(); // suspendedを毎回チェックして確実にresume
+      const sound = notificationSoundSetting.get();
+      SOUND_PLAYERS[sound]?.();
+    } catch (e) {
+      // Web Audio APIが使えない環境では無視
+    }
   }
 
   function findNotificationBadge() {
@@ -697,7 +791,8 @@
 
     const toast = document.createElement('div');
     toast.className = 'tt-notification-toast';
-    toast.textContent = delta === 1 ? 'You have a new notification!' : `You have ${delta} new notifications!`;
+    toast.textContent =
+      delta === 1 ? 'You have a new notification!' : `You have ${delta} new notifications!`;
     document.body.appendChild(toast);
 
     playNotificationSound();
@@ -712,6 +807,7 @@
   function checkNotificationCount() {
     if (!notificationToastEnabledSetting.get()) return;
     const current = getNotificationBadgeCount();
+    // 初回は基準値の記録のみ（既存の未読数で誤発火させない）
     if (lastNotificationCount === null) {
       lastNotificationCount = current;
       return;
@@ -724,7 +820,10 @@
     setInterval(checkNotificationCount, CONFIG.notificationToast.pollIntervalMs);
   }
 
-  // OGP Link Cards
+  // ============================================================
+  // OGPキャッシュ & リンクカード
+  // ============================================================
+
   const ogpCache = new Map();
 
   function loadOgpCacheFromStorage() {
@@ -759,7 +858,9 @@
           ogpCache.set(url, data);
           persistOgpCache();
           cb(data);
-        } catch (e) { cb(null); }
+        } catch (e) {
+          cb(null);
+        }
       },
       onerror: () => cb(null),
     });
@@ -768,7 +869,9 @@
   function parseOgpFromHtml(html) {
     const doc = new DOMParser().parseFromString(html, 'text/html');
     const getMeta = (prop) =>
-      doc.querySelector(`meta[property="${prop}"]`)?.content || doc.querySelector(`meta[name="${prop}"]`)?.content || '';
+      doc.querySelector(`meta[property="${prop}"]`)?.content
+      || doc.querySelector(`meta[name="${prop}"]`)?.content
+      || '';
 
     const title = getMeta('og:title') || doc.querySelector('title')?.textContent || '';
     const description = getMeta('og:description') || getMeta('description');
@@ -852,25 +955,52 @@
       if (article.dataset.ogpFetching !== url) return;
       delete article.dataset.ogpFetching;
 
-      if (!linkCardEnabledSetting.get() || !data || article.querySelector('[data-ogp-card]')) return;
+      if (!linkCardEnabledSetting.get()) return;
+      if (!data) return;
+      if (article.querySelector('[data-ogp-card]')) return;
+
       article.querySelector('p')?.insertAdjacentElement('afterend', buildLinkCard(data, url));
     });
   }
 
-  // Compose Translation
+  // ============================================================
+  // 投稿(compose)欄の翻訳機能
+  // ============================================================
+
+
   function buildTranslateUrl(endpoint, text, lang) {
-    const base = endpoint === 'primary'
-      ? 'https://translate.googleapis.com/translate_a/single?client=gtx&dt=t'
-      : 'https://clients5.google.com/translate_a/t?client=dict-chrome-ex';
-    return `${base}&sl=auto&tl=${encodeURIComponent(lang)}&q=${encodeURIComponent(text)}`;
+    if (endpoint === 'primary') {
+      return (
+        'https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=' +
+        encodeURIComponent(lang) +
+        '&dt=t&q=' +
+        encodeURIComponent(text)
+      );
+    }
+    // フォールバック: clients5経由
+    return (
+      'https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=auto&tl=' +
+      encodeURIComponent(lang) +
+      '&q=' +
+      encodeURIComponent(text)
+    );
   }
 
   function parseTranslateResponse(endpoint, responseText) {
     const data = JSON.parse(responseText);
-    if (endpoint === 'primary') return data[0].map((seg) => seg[0]).join('');
-    if (Array.isArray(data) && Array.isArray(data[0])) return data[0][0];
-    if (Array.isArray(data) && typeof data[0] === 'string') return data[0];
-    if (data.sentences) return data.sentences.map((s) => s.trans).join('');
+    if (endpoint === 'primary') {
+      return data[0].map((seg) => seg[0]).join('');
+    }
+    // clients5(dict-chrome-ex)形式: [["翻訳結果","検出された原文言語コード"]]
+    if (Array.isArray(data) && Array.isArray(data[0])) {
+      return data[0][0];
+    }
+    if (Array.isArray(data) && typeof data[0] === 'string') {
+      return data[0];
+    }
+    if (data.sentences) {
+      return data.sentences.map((s) => s.trans).join('');
+    }
     throw new Error('unexpected format');
   }
 
@@ -878,25 +1008,57 @@
     GM_xmlhttpRequest({
       method: 'GET',
       url: buildTranslateUrl(endpoint, text, lang),
-      onload: (res) => {
-        if (res.status < 200 || res.status >= 300) return onFail(res.status, res.responseText);
-        try { onSuccess(parseTranslateResponse(endpoint, res.responseText)); } catch (err) { onFail('parse', res.responseText); }
+      onload: function (res) {
+        if (res.status < 200 || res.status >= 300) {
+          onFail(res.status, res.responseText);
+          return;
+        }
+        try {
+          onSuccess(parseTranslateResponse(endpoint, res.responseText));
+        } catch (err) {
+          onFail('parse', res.responseText);
+        }
       },
-      onerror: (err) => onFail('network', err),
-      ontimeout: () => onFail('timeout', null),
+      onerror: function (err) {
+        onFail('network', err);
+      },
+      ontimeout: function () {
+        onFail('timeout', null);
+      },
     });
   }
 
   function callTranslateApi(text, lang, onSuccess, onFail) {
-    requestTranslateOnce('primary', text, lang, onSuccess, (status) => {
-      if (status === 429) {
-        requestTranslateOnce('fallback', text, lang, onSuccess, (status2) => {
-          onFail(status2 === 429 ? 'Rate limited — please wait a moment' : 'HTTP ' + status2);
-        });
-      } else {
-        onFail(status === 'parse' ? 'Parse error' : status === 'network' ? 'Network error' : status === 'timeout' ? 'Timeout' : 'HTTP ' + status);
+    // primaryが429ならfallbackへ切替
+    requestTranslateOnce(
+      'primary',
+      text,
+      lang,
+      onSuccess,
+      (status) => {
+        if (status === 429) {
+          requestTranslateOnce(
+            'fallback',
+            text,
+            lang,
+            onSuccess,
+            (status2) => {
+              onFail(
+                status2 === 429
+                  ? 'Rate limited — please wait a moment and try again'
+                  : 'HTTP ' + status2
+              );
+            }
+          );
+        } else {
+          onFail(status === 'parse' ? 'Parse error' : status === 'network' ? 'Network error' : status === 'timeout' ? 'Timeout' : 'HTTP ' + status);
+        }
       }
-    });
+    );
+  }
+
+  function getComposeEls() {
+    return Array.from(document.querySelectorAll(CONFIG.translate.composeSelector));
   }
 
   function getComposeText(el) {
@@ -910,7 +1072,11 @@
       return;
     }
     btn.style.display = '';
-    btn.textContent = btn.dataset.ttState === 'loading' ? `🌐 Translating... (${lang})` : `🌐 Insert translation (${lang})`;
+    if (btn.dataset.ttState === 'loading') {
+      btn.textContent = `🌐 Translating... (${lang})`;
+    } else {
+      btn.textContent = `🌐 Insert translation (${lang})`;
+    }
   }
 
   function refreshAllTranslateBtnLabels() {
@@ -921,10 +1087,14 @@
     if (el.tagName === 'TEXTAREA') {
       const current = el.value;
       const sep = current.endsWith('\n') || current === '' ? '' : '\n';
-      const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+      const nativeSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLTextAreaElement.prototype,
+        'value'
+      ).set;
       nativeSetter.call(el, current + sep + translatedText);
       el.dispatchEvent(new Event('input', { bubbles: true }));
     } else {
+      // contenteditable
       const br = document.createElement('br');
       const textNode = document.createTextNode(translatedText);
       el.appendChild(br);
@@ -958,10 +1128,11 @@
 
         btn.dataset.ttState = 'loading';
         updateComposeBtnLabel(btn);
+        const lang = translateLangSetting.get();
 
         callTranslateApi(
           text,
-          translateLangSetting.get(),
+          lang,
           (translated) => {
             btn.dataset.ttState = 'idle';
             updateComposeBtnLabel(btn);
@@ -995,8 +1166,13 @@
     });
   }
 
-  // Swipe Gallery
+  // ============================================================
+  // 複数画像のスワイプギャラリー
+  // ============================================================
+
+
   function findGalleryImages(article) {
+    // "Attached media" のimgを複数含むグリッドを探す(単一画像は対象外)
     const imgs = Array.from(article.querySelectorAll('img[alt="Attached media"]'));
     return imgs.length >= 2 ? imgs : [];
   }
@@ -1053,9 +1229,16 @@
       render(withTransition);
     }
 
-    prevBtn.addEventListener('click', (e) => { e.stopPropagation(); goTo(index - 1); });
-    nextBtn.addEventListener('click', (e) => { e.stopPropagation(); goTo(index + 1); });
+    prevBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      goTo(index - 1);
+    });
+    nextBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      goTo(index + 1);
+    });
 
+    // スワイプ操作
     let startX = 0;
     let currentX = 0;
     let dragging = false;
@@ -1080,15 +1263,21 @@
       dragging = false;
       const deltaX = currentX - startX;
       const threshold = window.innerWidth * 0.15;
-      if (deltaX > threshold && index > 0) goTo(index - 1);
-      else if (deltaX < -threshold && index < images.length - 1) goTo(index + 1);
-      else goTo(index);
+      if (deltaX > threshold && index > 0) {
+        goTo(index - 1);
+      } else if (deltaX < -threshold && index < images.length - 1) {
+        goTo(index + 1);
+      } else {
+        goTo(index);
+      }
     }
 
     track.addEventListener('pointerup', endDrag);
     track.addEventListener('pointercancel', endDrag);
 
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) overlay.remove();
+    });
 
     function handleKeydown(e) {
       if (e.key === 'ArrowLeft') goTo(index - 1);
@@ -1135,16 +1324,25 @@
   }
 
   function processGalleryArticles(root = document) {
-    collectMatching(root, 'article').forEach(attachGalleryHandlers);
+    const articles = collectMatching(root, 'article');
+    articles.forEach(attachGalleryHandlers);
   }
 
-  // Reply Prefill
+  // ============================================================
+  // インラインリプライ欄への@ハンドル自動入力
+  // ============================================================
+
+  // aria-labelからハンドルを抽出するユーティリティ
   function extractHandleFromLabel(label) {
     const match = label.match(/^View @(.+?)(?:'s|'s) profile$/);
     return match ? match[1] : null;
   }
 
+  // textareaに対応するツイート投稿者ハンドルを取得する。
+  // インラインリプライ欄はarticle外(div[role="form"])に置かれるケースがあるため、
+  // 複数の経路で投稿者ボタンを探す。
   function findHandleForTextarea(textarea) {
+    // 経路1: textarea が article 内にある場合 (旧来の構造)
     const article = textarea.closest('article');
     if (article) {
       const btn = article.querySelector(':scope > div.flex.items-start.gap-3 > button[aria-label^="View @"]');
@@ -1152,8 +1350,11 @@
       if (handle) return handle;
     }
 
+    // 経路2: textarea が div[role="form"] 内にあり、その祖先に投稿者ボタンがある場合
+    // (引用ツイートへのインラインリプライ等)
     const form = textarea.closest('[role="form"]');
     if (form) {
+      // form の祖先を遡りながら "View @" ボタンを探す
       let el = form.parentElement;
       while (el && el !== document.body) {
         const btn = el.querySelector('button[aria-label^="View @"]');
@@ -1185,20 +1386,27 @@
       textarea.dataset.ttPrefillDone = '1';
       if (textarea.value.trim() !== '') return;
 
-      const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+      const nativeSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLTextAreaElement.prototype,
+        'value'
+      ).set;
       nativeSetter.call(textarea, `@${handle} `);
       textarea.dispatchEvent(new Event('input', { bubbles: true }));
       textarea.setSelectionRange(textarea.value.length, textarea.value.length);
     });
   }
 
-  // DOM Observer & Route Handling
+  // ============================================================
+  // DOM監視（最適化）
+  // ============================================================
+
   function handleAddedNode(node) {
     if (node.nodeType !== 1) return;
 
     if (node.matches?.('article')) processArticle(node);
     node.querySelectorAll?.('article').forEach(processArticle);
 
+    applyFontSizeToComposers(node);
     applyAutoplaySetting(node);
     processComposeBoxes(node);
     processGalleryArticles(node);
@@ -1232,10 +1440,16 @@
       }
     });
 
-    observer.observe(document.body, { childList: true, subtree: true });
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+    });
   }
 
-  // Init
+  // ============================================================
+  // 初期化
+  // ============================================================
+
   function init() {
     loadOgpCacheFromStorage();
     applyStyles();
