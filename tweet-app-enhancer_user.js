@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Tweet.app Enhancer
 // @namespace    https://imgd.net/
-// @version      1.6.0
-// @description  Font size, content width, always-visible composer, video/GIF autoplay, OGP link cards, compose translation, swipe photo gallery, and reply @handle prefill for app.tweet.app — all configurable from the Settings page.
+// @version      1.7.0
+// @description  Font size, content width, always-visible composer, video/GIF autoplay, OGP link cards, compose translation, swipe photo gallery, reply @handle prefill, and hide reposts for app.tweet.app — all configurable from the Settings page.
 // @match        https://app.tweet.app/*
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -62,6 +62,10 @@
     },
     gallery: {
       enabledKey: 'tweetapp_gallery_enabled',
+      enabledDefault: false,
+    },
+    hideRepost: {
+      enabledKey: 'tweetapp_hide_repost_enabled',
       enabledDefault: false,
     },
     notificationToast: {
@@ -126,6 +130,7 @@
   const translateLangSetting = createSetting(CONFIG.translate.key, CONFIG.translate.default, () => refreshAllTranslateBtnLabels());
   const replyPrefillEnabledSetting = createSetting(CONFIG.replyPrefill.enabledKey, CONFIG.replyPrefill.enabledDefault, () => {});
   const galleryEnabledSetting = createSetting(CONFIG.gallery.enabledKey, CONFIG.gallery.enabledDefault, () => {});
+  const hideRepostEnabledSetting = createSetting(CONFIG.hideRepost.enabledKey, CONFIG.hideRepost.enabledDefault, () => applyHideRepostFilter());
   const notificationToastEnabledSetting = createSetting(CONFIG.notificationToast.enabledKey, CONFIG.notificationToast.enabledDefault, () => {});
   const notificationSoundSetting = createSetting(CONFIG.notificationToast.soundKey, CONFIG.notificationToast.soundDefault, () => {});
 
@@ -601,6 +606,10 @@
     // Swipe gallery
     const galleryToggle = createToggleControl(galleryEnabledSetting, 'ON', 'OFF');
     card.appendChild(createSettingsRow('Swipe gallery', 'Swipe/keyboard navigation for multi-photo tweets', galleryToggle.el));
+
+    // Hide reposted articles
+    const hideRepostToggle = createToggleControl(hideRepostEnabledSetting, 'ON', 'OFF');
+    card.appendChild(createSettingsRow('Hide reposts', 'Hide articles marked as reposted', hideRepostToggle.el));
 
     // Autoplay
     const autoplayToggle = createToggleControl(autoplayEnabledSetting, 'ON', 'OFF');
@@ -1329,6 +1338,39 @@
   }
 
   // ============================================================
+  // リポスト非表示フィルター
+  // ============================================================
+
+  function isRepostedArticle(article) {
+    // articleの直下の span タグで "reposted" の表記を検索
+    const spans = article.querySelectorAll(':scope span');
+    for (const span of spans) {
+      if (span.textContent.includes('reposted')) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function applyHideRepostFilter(root = document) {
+    if (!hideRepostEnabledSetting.get()) return;
+
+    const articles = collectMatching(root, 'article');
+    articles.forEach((article) => {
+      if (isRepostedArticle(article)) {
+        article.style.display = 'none';
+      }
+    });
+  }
+
+  function showAllArticles(root = document) {
+    const articles = collectMatching(root, 'article');
+    articles.forEach((article) => {
+      article.style.display = '';
+    });
+  }
+
+  // ============================================================
   // インラインリプライ欄への@ハンドル自動入力
   // ============================================================
 
@@ -1411,11 +1453,13 @@
     processComposeBoxes(node);
     processGalleryArticles(node);
     prefillInlineReplyHandles(node);
+    applyHideRepostFilter(node);
     injectSettingsSection();
   }
 
   function handleRouteChange() {
     applyStyles();
+    applyHideRepostFilter();
     injectSettingsSection();
   }
 
@@ -1454,6 +1498,7 @@
     loadOgpCacheFromStorage();
     applyStyles();
     applyAutoplaySetting();
+    applyHideRepostFilter();
     startObserving();
     watchRouteChanges();
     document.querySelectorAll('article').forEach(processArticle);
@@ -1466,10 +1511,12 @@
     requestAnimationFrame(() => {
       applyStyles();
       applyAutoplaySetting();
+      applyHideRepostFilter();
     });
     setTimeout(() => {
       applyStyles();
       applyAutoplaySetting();
+      applyHideRepostFilter();
     }, 500);
   }
 
