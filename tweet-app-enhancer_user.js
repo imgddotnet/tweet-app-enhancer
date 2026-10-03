@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tweet.app Enhancer
 // @namespace    https://imgd.net/
-// @version      1.7.0
+// @version      1.7.5
 // @description  Font size, content width, always-visible composer, video/GIF autoplay, OGP link cards, compose translation, swipe photo gallery, reply @handle prefill, and hide reposts for app.tweet.app — all configurable from the Settings page.
 // @match        https://app.tweet.app/*
 // @grant        GM_getValue
@@ -301,13 +301,14 @@
       cursor: pointer;
       color: rgb(101,119,134);
       font-size: 13px;
-      margin-top: 6px;
+      margin-right: 8px;
       user-select: none;
       width: fit-content;
+      padding: 4px 0;
     }
     .tt-compose-btn:hover { color: #1da1f2; }
     .tt-compose-result {
-      margin-top: 6px;
+      margin-top: 8px;
       padding: 8px 10px;
       background: rgba(23,191,99,0.08);
       border-left: 3px solid #17bf63;
@@ -622,9 +623,25 @@
     const notificationSoundCtrl = createSelectControl(
       CONFIG.notificationToast.sounds.map((s) => ({ value: s, label: s.charAt(0).toUpperCase() + s.slice(1) })),
       () => notificationSoundSetting.get(),
-      (v) => notificationSoundSetting.set(v)
+      (v) => {
+        notificationSoundSetting.set(v);
+        playNotificationSound(); // 選択時にデモ再生
+      }
     );
-    card.appendChild(createSettingsRow('Notification sound', 'Sound to play with the notification popup', notificationSoundCtrl.el));
+    
+    // デモボタンを追加
+    const demoSoundBtn = document.createElement('button');
+    demoSoundBtn.type = 'button';
+    demoSoundBtn.className = 'tt-settings-value-btn';
+    demoSoundBtn.textContent = 'Play';
+    demoSoundBtn.addEventListener('click', playNotificationSound);
+    
+    const soundControlWrapper = document.createElement('div');
+    soundControlWrapper.style.cssText = 'display:flex;gap:8px;align-items:center;';
+    soundControlWrapper.appendChild(notificationSoundCtrl.el);
+    soundControlWrapper.appendChild(demoSoundBtn);
+    
+    card.appendChild(createSettingsRow('Notification sound', 'Sound to play with the notification popup', soundControlWrapper));
 
     // Link card
     const linkCardToggle = createToggleControl(linkCardEnabledSetting, 'ON', 'OFF');
@@ -665,17 +682,21 @@
 
   let lastNotificationCount = null;
   let audioCtx = null;
+  let audioInitAttempted = false;
 
   // AudioContextはユーザー操作の中で初めて呼ばれた時に生成する。
   // ページロード時やcontent script初期化時に生成すると自動再生ポリシー違反になる。
   function ensureAudioCtx() {
-    if (!audioCtx) {
+    if (!audioCtx && !audioInitAttempted) {
+      audioInitAttempted = true;
       try {
         audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       } catch (e) {
+        // AudioContext 生成失敗時は無視（拡張機能環境など）
         return null;
       }
     }
+    if (!audioCtx) return null;
     // resume()はPromiseを返す。ユーザー操作を伴わない呼び出し(ポーリング等)では
     // 拒否されることがあるため、未処理のPromise拒否にならないよう必ず捕捉する。
     if (audioCtx.state === 'suspended') {
@@ -686,8 +707,16 @@
 
   // ページ上でのユーザーの最初の操作をきっかけにresumeを試みておく。
   // ポーリングによる自動チェックだけではsuspendedのまま鳴らせないための保険。
-  document.addEventListener('click', ensureAudioCtx, { once: true, capture: true });
-  document.addEventListener('keydown', ensureAudioCtx, { once: true, capture: true });
+  if (document.readyState !== 'loading') {
+    // ドキュメント解析済み時は遅延実行
+    setTimeout(() => {
+      document.addEventListener('click', ensureAudioCtx, { once: true, capture: true });
+      document.addEventListener('keydown', ensureAudioCtx, { once: true, capture: true });
+    }, 100);
+  } else {
+    document.addEventListener('click', ensureAudioCtx, { once: true, capture: true });
+    document.addEventListener('keydown', ensureAudioCtx, { once: true, capture: true });
+  }
 
   // 短い正弦波を鳴らす共通ルーティン
   // freq: Hz, startTime: ctx.currentTime基準の開始秒, duration: 秒, gain: 0~1
@@ -705,10 +734,10 @@
     osc.stop(startTime + duration + 0.05);
   }
 
-  // マリンバ風: サイン波にトレモロ(高調波)を重ねて木質感を出す
-  function playMarimbaNote(ctx, freq, startTime, gain = 0.3) {
-    [1, 4, 10].forEach((harmonic, i) => {
-      const g = gain / (i + 1);
+  // マリンバ風: 明るく気楽な調子。高周波を強調して軽く爽やかに
+  function playMarimbaNote(ctx, freq, startTime, gain = 0.28) {
+    [1, 4, 9].forEach((harmonic, i) => {
+      const g = gain / (i * 0.4 + 1);
       const osc = ctx.createOscillator();
       const env = ctx.createGain();
       osc.connect(env);
@@ -716,28 +745,28 @@
       osc.type = 'sine';
       osc.frequency.setValueAtTime(freq * harmonic, startTime);
       env.gain.setValueAtTime(0, startTime);
-      env.gain.linearRampToValueAtTime(g, startTime + 0.005);
-      env.gain.exponentialRampToValueAtTime(0.001, startTime + 0.5 / harmonic);
+      env.gain.linearRampToValueAtTime(g, startTime + 0.004);
+      env.gain.exponentialRampToValueAtTime(0.001, startTime + 0.25 / harmonic);
       osc.start(startTime);
-      osc.stop(startTime + 0.7);
+      osc.stop(startTime + 0.4);
     });
   }
 
-  // ベル風: 倍音を複数重ねてメタリックな余韻を出す
-  function playBellNote(ctx, freq, startTime, gain = 0.25) {
-    [1, 2.756, 5.404, 7].forEach((ratio, i) => {
+  // ベル風: 明るく気楽な調子。高倍音を強調して爽やかに
+  function playBellNote(ctx, freq, startTime, gain = 0.22) {
+    [1, 3, 6].forEach((ratio, i) => {
       const osc = ctx.createOscillator();
       const env = ctx.createGain();
       osc.connect(env);
       env.connect(ctx.destination);
       osc.type = 'sine';
       osc.frequency.setValueAtTime(freq * ratio, startTime);
-      const g = gain / (i * 0.8 + 1);
+      const g = gain / (i * 0.5 + 1);
       env.gain.setValueAtTime(0, startTime);
-      env.gain.linearRampToValueAtTime(g, startTime + 0.005);
-      env.gain.exponentialRampToValueAtTime(0.001, startTime + 1.2 - i * 0.2);
+      env.gain.linearRampToValueAtTime(g, startTime + 0.004);
+      env.gain.exponentialRampToValueAtTime(0.001, startTime + 0.6 - i * 0.12);
       osc.start(startTime);
-      osc.stop(startTime + 1.5);
+      osc.stop(startTime + 0.75);
     });
   }
 
@@ -749,25 +778,25 @@
       const t = ctx.currentTime;
       [261.63, 329.63, 392.00].forEach((freq, i) => playTone(ctx, freq, t + i * 0.12, 0.35));
     },
-    // やわらかい水滴音: 高めの音を素早くフェードアウト
+    // 軽い水滴音: 明るく軽い調子で素早くフェードアウト
     drop: () => {
       const ctx = ensureAudioCtx(); if (!ctx) return;
       const t = ctx.currentTime;
-      playTone(ctx, 880, t, 0.18, 0.3);
+      playTone(ctx, 988, t, 0.15, 0.25);
     },
     // マリンバ風2音下降(G4→E4)
     marimba: () => {
       const ctx = ensureAudioCtx(); if (!ctx) return;
       const t = ctx.currentTime;
       playMarimbaNote(ctx, 392.00, t);
-      playMarimbaNote(ctx, 329.63, t + 0.15);
+      playMarimbaNote(ctx, 329.63, t + 0.12);
     },
     // ベル風2音上昇(E4→G4)
     bell: () => {
       const ctx = ensureAudioCtx(); if (!ctx) return;
       const t = ctx.currentTime;
       playBellNote(ctx, 329.63, t);
-      playBellNote(ctx, 392.00, t + 0.18, 0.2);
+      playBellNote(ctx, 392.00, t + 0.15, 0.22);
     },
   };
 
@@ -939,6 +968,30 @@
     document.querySelectorAll('article[data-ogp-fetching]').forEach((el) => delete el.dataset.ogpFetching);
   }
 
+  function findReactionBar(article) {
+    // リアクションアイコン群を探す。複数の方法を試す
+    
+    // 方法1: data-testid 属性
+    let bar = article.querySelector('[data-testid="tweet-action-bar"]');
+    if (bar) return bar;
+    
+    // 方法2: 「いいね」のボタンが入っているコンテナ（心のアイコン）
+    bar = article.querySelector('[data-testid="like"]')?.closest('.flex, div[class*="gap"]');
+    if (bar) return bar;
+    
+    // 方法3: flex + items-center の組み合わせ
+    bar = article.querySelector('.flex.items-center');
+    if (bar) return bar;
+    
+    // 方法4: article 直下の最後のdiv（最後の手段）
+    const divs = article.querySelectorAll(':scope > div');
+    if (divs.length > 0) {
+      return divs[divs.length - 1];
+    }
+    
+    return null;
+  }
+
   function processArticle(article) {
     if (!linkCardEnabledSetting.get()) return;
 
@@ -968,7 +1021,14 @@
       if (!data) return;
       if (article.querySelector('[data-ogp-card]')) return;
 
-      article.querySelector('p')?.insertAdjacentElement('afterend', buildLinkCard(data, url));
+      // リアクションバーの直前にカード挿入。見つからない場合は従来通り p タグ直後
+      const reactionBar = findReactionBar(article);
+      const linkCard = buildLinkCard(data, url);
+      if (reactionBar) {
+        reactionBar.insertAdjacentElement('beforebegin', linkCard);
+      } else {
+        article.querySelector('p')?.insertAdjacentElement('afterend', linkCard);
+      }
     });
   }
 
@@ -1112,12 +1172,66 @@
     }
   }
 
+  function findActionBar(composeEl) {
+    // compose要素から最も近い、Add Photo/Video/Poll のボタン群を探す
+    // TL内のみに存在（ポップアップにはない）
+    
+    let current = composeEl;
+    while (current && current.tagName !== 'BODY') {
+      const parent = current.parentElement;
+      if (!parent) break;
+      
+      // 親の直下の兄弟要素を探索
+      const nextSibling = current.nextElementSibling;
+      if (nextSibling && nextSibling.textContent.includes('Photo') && nextSibling.textContent.includes('Video')) {
+        return nextSibling;
+      }
+      
+      // 親の子要素の中から flex コンテナで Add Photo を含むものを探す
+      const flexes = parent.querySelectorAll('[class*="flex"][class*="gap"], [class*="flex items"]');
+      for (const flex of flexes) {
+        if (flex.textContent.includes('Photo') && flex.textContent.includes('Video')) {
+          return flex;
+        }
+      }
+      
+      current = parent;
+    }
+    return null;
+  }
+
+  function autoGrowTextarea(textarea) {
+    // textarea の高さを内容に応じて自動調整
+    if (textarea.tagName !== 'TEXTAREA') return;
+    
+    // 初期設定
+    textarea.style.overflowY = 'hidden';
+    textarea.style.resize = 'none';
+    
+    function resize() {
+      textarea.style.height = 'auto';
+      const scrollHeight = textarea.scrollHeight;
+      textarea.style.height = scrollHeight + 'px';
+    }
+    
+    // 初回実行
+    resize();
+    
+    // input イベントで毎回リサイズ
+    textarea.addEventListener('input', resize);
+  }
+
   function processComposeBoxes(root = document) {
     const els = collectMatching(root, CONFIG.translate.composeSelector);
 
     els.forEach((el) => {
       if (el.dataset.ttComposeDone) return;
       el.dataset.ttComposeDone = '1';
+      
+      // テキストエリアの自動拡大機能を有効化
+      if (el.tagName === 'TEXTAREA') {
+        autoGrowTextarea(el);
+      }
 
       const btn = document.createElement('div');
       btn.className = 'tt-compose-btn';
@@ -1171,7 +1285,21 @@
         );
       });
 
-      el.insertAdjacentElement('afterend', btn);
+      // アクションバーを探す
+      const actionBar = findActionBar(el);
+      
+      if (actionBar) {
+        // TL内: アクションバー内に統合（ボタングループと同行）
+        const firstChild = actionBar.firstElementChild;
+        if (firstChild) {
+          firstChild.insertAdjacentElement('beforebegin', btn);
+        } else {
+          actionBar.appendChild(btn);
+        }
+      } else {
+        // ポップアップ内またはアクションバーが見つからない場合: compose 直下
+        el.insertAdjacentElement('afterend', btn);
+      }
     });
   }
 
