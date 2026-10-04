@@ -22,6 +22,10 @@
   // ============================================================
 
   const CONFIG = {
+    autogrow: {
+      enabledKey: 'tweetapp_autogrow_enabled',
+      enabledDefault: true,
+    },
     font: {
       key: 'tweetapp_article_scale',
       default: 1,
@@ -130,6 +134,7 @@
   const translateLangSetting = createSetting(CONFIG.translate.key, CONFIG.translate.default, () => refreshAllTranslateBtnLabels());
   const replyPrefillEnabledSetting = createSetting(CONFIG.replyPrefill.enabledKey, CONFIG.replyPrefill.enabledDefault, () => {});
   const galleryEnabledSetting = createSetting(CONFIG.gallery.enabledKey, CONFIG.gallery.enabledDefault, () => {});
+  const autogrowEnabledSetting = createSetting(CONFIG.autogrow.enabledKey, CONFIG.autogrow.enabledDefault, () => {});
   const hideRepostEnabledSetting = createSetting(CONFIG.hideRepost.enabledKey, CONFIG.hideRepost.enabledDefault, () => applyHideRepostFilter());
   const notificationToastEnabledSetting = createSetting(CONFIG.notificationToast.enabledKey, CONFIG.notificationToast.enabledDefault, () => {});
   const notificationSoundSetting = createSetting(CONFIG.notificationToast.soundKey, CONFIG.notificationToast.soundDefault, () => {});
@@ -610,6 +615,10 @@
     // Swipe gallery
     const galleryToggle = createToggleControl(galleryEnabledSetting, 'ON', 'OFF');
     card.appendChild(createSettingsRow('Swipe gallery', 'Swipe/keyboard navigation for multi-photo tweets', galleryToggle.el));
+
+    // Auto-grow textarea
+    const autogrowToggle = createToggleControl(autogrowEnabledSetting, 'ON', 'OFF');
+    card.appendChild(createSettingsRow('Auto-grow textarea', 'Automatically expand text input area when typing multiple lines', autogrowToggle.el));
 
     // Hide reposted articles
     const hideRepostToggle = createToggleControl(hideRepostEnabledSetting, 'ON', 'OFF');
@@ -1221,7 +1230,8 @@
     const top = card.getBoundingClientRect().top;
     overlay.style.setProperty('align-items', 'flex-start', 'important');
     overlay.style.setProperty('place-items', 'start center', 'important');
-    card.style.setProperty('margin-top', top + 'px', 'important');
+    card.style.setProperty('top', '10px', 'important');
+    // card.style.setProperty('margin-top', top + 'px', 'important'); // 上は10pxで固定
     card.style.setProperty('margin-bottom', '0', 'important');
 
     // 上端がずれた場合のフォールバック(中央寄せがtransform等の場合)
@@ -1231,7 +1241,7 @@
         const r = card.getBoundingClientRect();
         card.style.setProperty('margin-top', '0', 'important');
         card.style.setProperty('position', 'fixed', 'important');
-        card.style.setProperty('top', top + 'px', 'important');
+        card.style.setProperty('top', '10px', 'important');
         card.style.setProperty('left', r.left + 'px', 'important');
         card.style.setProperty('width', r.width + 'px', 'important');
         card.style.setProperty('transform', 'none', 'important');
@@ -1240,8 +1250,9 @@
   }
 
   function autoGrowTextarea(textarea) {
-    // textarea の高さを内容に応じて自動調整
+    // textarea の高さを内容に応じて自動調整（設定がONの場合のみ）
     if (textarea.tagName !== 'TEXTAREA') return;
+    if (!GM_getValue(CONFIG.autogrow.enabledKey, CONFIG.autogrow.enabledDefault)) return;
 
     textarea.style.overflowY = 'hidden';
     textarea.style.resize = 'none';
