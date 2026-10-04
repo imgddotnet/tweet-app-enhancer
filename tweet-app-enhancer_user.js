@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tweet.app Enhancer
 // @namespace    https://imgd.net/
-// @version      1.7.5
+// @version      1.7.6
 // @description  Font size, content width, always-visible composer, video/GIF autoplay, OGP link cards, compose translation, swipe photo gallery, reply @handle prefill, and hide reposts for app.tweet.app — all configurable from the Settings page.
 // @match        https://app.tweet.app/*
 // @grant        GM_getValue
@@ -459,9 +459,12 @@
   // 入力欄は裏側のミラー要素も揃えないと文字とカーソル位置がずれる。
   // collectMatchingではなくquerySelectorAllを使う: rootがtextarea自身の場合に
   // parentElement全体をstyle書き換えしてReactのvalue状態を乱すのを防ぐため
+  // ただしarticle内のインライン返信欄はarticleのzoomが既にかかっているため、
+  // 倍率を掛けると二重拡大になる。その場合は基準pxのまま適用する。
   function applyFontSizeToComposers(root = document) {
-    const fontSizePx = Math.round(CONFIG.font.composerBasePx * fontSizeSetting.get());
+    const scaledPx = Math.round(CONFIG.font.composerBasePx * fontSizeSetting.get());
     root.querySelectorAll?.(CONFIG.composer.textareaSelector).forEach((textarea) => {
+      const fontSizePx = textarea.closest('article') ? CONFIG.font.composerBasePx : scaledPx;
       setFontStyle(textarea, fontSizePx);
       textarea.parentElement?.querySelectorAll('*').forEach((el) => setFontStyle(el, fontSizePx));
     });
@@ -1200,25 +1203,59 @@
     return null;
   }
 
+  // ポップアップ(position:fixedのオーバーレイ内)の場合、上端位置を固定して下方向にのみ伸ばす
+  function pinPopupTop(textarea) {
+    let overlay = null;
+    let el = textarea.parentElement;
+    while (el && el !== document.body) {
+      if (getComputedStyle(el).position === 'fixed') { overlay = el; break; }
+      el = el.parentElement;
+    }
+    if (!overlay) return; // TL内編集は対象外
+
+    // overlay直下で textarea を含む要素 = ポップアップ本体(カード)
+    let card = textarea;
+    while (card.parentElement && card.parentElement !== overlay) card = card.parentElement;
+    if (card === textarea || card.parentElement !== overlay) return;
+
+    const top = card.getBoundingClientRect().top;
+    overlay.style.setProperty('align-items', 'flex-start', 'important');
+    overlay.style.setProperty('place-items', 'start center', 'important');
+    card.style.setProperty('margin-top', top + 'px', 'important');
+    card.style.setProperty('margin-bottom', '0', 'important');
+
+    // 上端がずれた場合のフォールバック(中央寄せがtransform等の場合)
+    requestAnimationFrame(() => {
+      const diff = card.getBoundingClientRect().top - top;
+      if (Math.abs(diff) > 1) {
+        const r = card.getBoundingClientRect();
+        card.style.setProperty('margin-top', '0', 'important');
+        card.style.setProperty('position', 'fixed', 'important');
+        card.style.setProperty('top', top + 'px', 'important');
+        card.style.setProperty('left', r.left + 'px', 'important');
+        card.style.setProperty('width', r.width + 'px', 'important');
+        card.style.setProperty('transform', 'none', 'important');
+      }
+    });
+  }
+
   function autoGrowTextarea(textarea) {
     // textarea の高さを内容に応じて自動調整
     if (textarea.tagName !== 'TEXTAREA') return;
-    
-    // 初期設定
+
     textarea.style.overflowY = 'hidden';
     textarea.style.resize = 'none';
-    
+
     function resize() {
       textarea.style.height = 'auto';
-      const scrollHeight = textarea.scrollHeight;
-      textarea.style.height = scrollHeight + 'px';
+      textarea.style.height = textarea.scrollHeight + 'px';
     }
-    
-    // 初回実行
+
     resize();
-    
-    // input イベントで毎回リサイズ
     textarea.addEventListener('input', resize);
+
+    // 初期レイアウト確定後に上端を固定
+    requestAnimationFrame(() => pinPopupTop(textarea));
   }
 
   function processComposeBoxes(root = document) {
