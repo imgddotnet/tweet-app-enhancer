@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tweet.app Enhancer
 // @namespace    https://imgd.net/
-// @version      1.7.6
+// @version      1.8.0
 // @description  Font size, content width, always-visible composer, video/GIF autoplay, OGP link cards, compose translation, swipe photo gallery, reply @handle prefill, and hide reposts for app.tweet.app — all configurable from the Settings page.
 // @match        https://app.tweet.app/*
 // @grant        GM_getValue
@@ -133,7 +133,12 @@
   const autoplayEnabledSetting = createSetting(CONFIG.autoplay.enabledKey, CONFIG.autoplay.enabledDefault, () => applyAutoplaySetting(document, true));
   const translateLangSetting = createSetting(CONFIG.translate.key, CONFIG.translate.default, () => refreshAllTranslateBtnLabels());
   const replyPrefillEnabledSetting = createSetting(CONFIG.replyPrefill.enabledKey, CONFIG.replyPrefill.enabledDefault, () => {});
-  const galleryEnabledSetting = createSetting(CONFIG.gallery.enabledKey, CONFIG.gallery.enabledDefault, () => {});
+  // Swipe gallery: tweet.appの仕様変更で不要になったため無効化(コードと設定項目は残す)。
+  // 保存値に関わらず常にfalseを返し、ONにも出来ない
+  const GALLERY_DISABLED = true;
+  const galleryEnabledSetting = GALLERY_DISABLED
+    ? { get: () => false, set: () => {} }
+    : createSetting(CONFIG.gallery.enabledKey, CONFIG.gallery.enabledDefault, () => {});
   const autogrowEnabledSetting = createSetting(CONFIG.autogrow.enabledKey, CONFIG.autogrow.enabledDefault, () => {});
   const hideRepostEnabledSetting = createSetting(CONFIG.hideRepost.enabledKey, CONFIG.hideRepost.enabledDefault, () => applyHideRepostFilter());
   const notificationToastEnabledSetting = createSetting(CONFIG.notificationToast.enabledKey, CONFIG.notificationToast.enabledDefault, () => {});
@@ -437,6 +442,13 @@
         width: ${mediaPct}% !important;
         margin-left: auto !important;
         margin-right: auto !important;
+      }
+      /* 仕様変更後の単一画像はラッパー無しでimgが直接置かれるためimg自体に適用 */
+      article img[alt="Attached media"]:not(div.rounded-2xl.overflow-hidden img) {
+        display: block !important;
+        width: ${mediaPct}% !important;
+        margin-left: auto !important;
+        margin-right: auto !important;
       }`}
 
       /* 常時表示の投稿欄（フィード最上部のみ） */
@@ -614,7 +626,12 @@
 
     // Swipe gallery
     const galleryToggle = createToggleControl(galleryEnabledSetting, 'ON', 'OFF');
-    card.appendChild(createSettingsRow('Swipe gallery', 'Swipe/keyboard navigation for multi-photo tweets', galleryToggle.el));
+    if (GALLERY_DISABLED) {
+      galleryToggle.el.disabled = true;
+      galleryToggle.el.style.opacity = '0.4';
+      galleryToggle.el.style.cursor = 'not-allowed';
+    }
+    card.appendChild(createSettingsRow('Swipe gallery', GALLERY_DISABLED ? 'Disabled (no longer needed after tweet.app update)' : 'Swipe/keyboard navigation for multi-photo tweets', galleryToggle.el));
 
     // Auto-grow textarea
     const autogrowToggle = createToggleControl(autogrowEnabledSetting, 'ON', 'OFF');
