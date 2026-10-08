@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Tweet.app Enhancer",
-  "version": "1.8.0",
-  "description": "Font size, content width, always-visible composer, video/GIF autoplay, OGP link cards, compose translation, swipe photo gallery, reply @handle prefill, and hide reposts for app.tweet.app — all configurable from the Settings page.",
+  "version": "2.0.0",
+  "description": "Tweet.app Enhancer: zoom, content width, link cards, compose translation, notification sound, and more.",
   "permissions": [
     "storage"
   ],
@@ -18,8 +18,12 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://app.tweet.app/*"],
-      "js": ["content.js"],
+      "matches": [
+        "https://app.tweet.app/*"
+      ],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_idle"
     }
   ]

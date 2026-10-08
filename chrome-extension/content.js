@@ -1,13 +1,10 @@
-// Tweet.app Enhancer (Chrome extension content script) v1.8.0
-// Ported from the Tampermonkey userscript. GM_* APIs are replaced with
-// chrome.storage (settings) and a background-script fetch relay (network).
+// Tweet.app Enhancer (Chrome extension content script) v2.0.0
 
 (function () {
   'use strict';
 
   // ============================================================
   // GM_* 互換レイヤー (chrome.storage.local ベース)
-  // ============================================================
 
   const __settingsCache = {};
 
@@ -30,7 +27,6 @@
   }
 
   // background.js経由でfetchする(ページのCSPやCORSの影響を受けない)
-  // service workerが停止中など例外ケースはrejectしてcatch側に任せる
   function bgFetch(url) {
     return new Promise((resolve, reject) => {
       try {
@@ -55,9 +51,11 @@
 
   // ============================================================
   // CONFIG
-  // ============================================================
 
   const CONFIG = {
+    customCss: {
+      key: 'tweetapp_custom_css',
+    },
     autogrow: {
       enabledKey: 'tweetapp_autogrow_enabled',
       enabledDefault: true,
@@ -139,7 +137,6 @@
 
   // ============================================================
   // Settings
-  // ============================================================
 
   // root自身がセレクタに一致する場合も含めて要素を収集する
   function collectMatching(root, selector) {
@@ -170,7 +167,6 @@
   const translateLangSetting = createSetting(CONFIG.translate.key, CONFIG.translate.default, () => refreshAllTranslateBtnLabels());
   const replyPrefillEnabledSetting = createSetting(CONFIG.replyPrefill.enabledKey, CONFIG.replyPrefill.enabledDefault, () => {});
   // Swipe gallery: tweet.appの仕様変更で不要になったため無効化(コードと設定項目は残す)。
-  // 保存値に関わらず常にfalseを返し、ONにも出来ない
   const GALLERY_DISABLED = true;
   const galleryEnabledSetting = GALLERY_DISABLED
     ? { get: () => false, set: () => {} }
@@ -182,10 +178,6 @@
 
   // ============================================================
   // 動画・GIF自動再生制御
-  // ============================================================
-  // 挿入時にautoplay属性を外してpauseし、OFF中はplayイベントも監視して止める。
-  // ただし動画への直接操作を検知したらユーザー管理下として以後は触れない（WeakSet）。
-  // 制約: ネイティブコントロール経由の操作がvideoまで伝播しない環境では手動再生も止まる。
 
   const userTouchedVideos = new WeakSet();
 
@@ -258,7 +250,6 @@
 
   // ============================================================
   // CSS定義（動的な値を含むスタイルは applyStyles 側で生成）
-  // ============================================================
 
   const SETTINGS_PANEL_CSS = `
     .tt-toggle-switch {
@@ -448,7 +439,6 @@
 
   // ============================================================
   // スタイル適用
-  // ============================================================
 
   function applyStyles() {
     if (!styleEl) {
@@ -508,12 +498,6 @@
   }
 
   // 投稿欄はarticleのzoom対象外(入力中の見た目が変わると使いづらいため)。
-  // article側のスケール比率をpxに換算して同じ体感サイズになるよう適用する。
-  // 入力欄は裏側のミラー要素も揃えないと文字とカーソル位置がずれる。
-  // collectMatchingではなくquerySelectorAllを使う: rootがtextarea自身の場合に
-  // parentElement全体をstyle書き換えしてReactのvalue状態を乱すのを防ぐため
-  // ただしarticle内のインライン返信欄はarticleのzoomが既にかかっているため、
-  // 倍率を掛けると二重拡大になる。その場合は基準pxのまま適用する。
   function applyFontSizeToComposers(root = document) {
     const scaledPx = Math.round(CONFIG.font.composerBasePx * fontSizeSetting.get());
     root.querySelectorAll?.(CONFIG.composer.textareaSelector).forEach((textarea) => {
@@ -531,15 +515,54 @@
 
   // ============================================================
   // /settings ページへの設定パネル埋め込み
-  // ============================================================
 
+
+  function createSliderControl({ min, max, step, getValue, setValue, format }) {
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'display:flex;align-items:center;gap:10px;width:100%;';
+    wrap.dataset.wide = '1';
+
+    const input = document.createElement('input');
+    input.type = 'range';
+    input.min = String(min);
+    input.max = String(max);
+    input.step = String(step);
+    input.style.cssText = 'flex:1;cursor:pointer;';
+
+    const label = document.createElement('span');
+    label.style.cssText = 'min-width:48px;text-align:right;font-size:13px;font-variant-numeric:tabular-nums;';
+
+    function render() {
+      const v = getValue();
+      input.value = String(v);
+      label.textContent = format(v);
+    }
+
+    input.addEventListener('input', () => {
+      label.textContent = format(parseInt(input.value, 10));
+    });
+    input.addEventListener('change', () => {
+      setValue(parseInt(input.value, 10));
+      render();
+    });
+
+    wrap.appendChild(input);
+    wrap.appendChild(label);
+    render();
+    return { el: wrap, render };
+  }
 
   function createSettingsRow(title, description, controlEl) {
+    // 幅を使う大きな要素(スライダー・テキストエリア)は、タイトルの下に縦積みで配置する
+    const wide = controlEl.dataset.wide === '1';
+
     const row = document.createElement('div');
-    row.className = 'flex items-center justify-between gap-3 px-4 py-3.5';
+    row.className = wide
+      ? 'flex flex-col gap-3 px-4 py-3.5'
+      : 'flex items-center justify-between gap-3 px-4 py-3.5';
 
     const textWrap = document.createElement('div');
-    textWrap.className = 'flex flex-col min-w-0 flex-1';
+    textWrap.className = wide ? 'flex flex-col min-w-0' : 'flex flex-col min-w-0 flex-1';
 
     const titleEl = document.createElement('span');
     titleEl.className = 'text-[13px] font-bold text-tl-app-text';
@@ -548,10 +571,14 @@
 
     if (description) {
       const descEl = document.createElement('span');
-      descEl.className = 'text-[11px] text-tl-app-text-muted truncate';
+      descEl.className = wide
+        ? 'text-[11px] text-tl-app-text-muted leading-relaxed'
+        : 'text-[11px] text-tl-app-text-muted truncate';
       descEl.textContent = description;
       textWrap.appendChild(descEl);
     }
+
+    if (wide) controlEl.style.width = '100%';
 
     row.appendChild(textWrap);
     row.appendChild(controlEl);
@@ -608,6 +635,19 @@
     return { el: select, render };
   }
 
+  // tweet.app 既存ボタン(Changeボタン等)と同じ見た目のクラス
+  const SITE_BTN_CLASS = 'px-3.5 py-2 rounded-full text-xs font-bold border border-tl-app-border text-tl-app-text hover:bg-tl-app-surface transition-all cursor-pointer';
+
+  function applyCustomCss() {
+    let styleTag = document.getElementById('tweetapp-custom-css');
+    if (!styleTag) {
+      styleTag = document.createElement('style');
+      styleTag.id = 'tweetapp-custom-css';
+      (document.head || document.documentElement).appendChild(styleTag);
+    }
+    styleTag.textContent = GM_getValue(CONFIG.customCss.key, '');
+  }
+
   function buildSettingsSection() {
     const section = document.createElement('div');
     section.id = 'tweetapp-enhancements-section';
@@ -625,24 +665,27 @@
     const card = document.createElement('div');
     card.className = 'rounded-2xl border border-tl-app-border overflow-hidden divide-y divide-tl-app-border';
 
-    // Article scale
-    const fontSizeCtrl = createSelectControl(
-      CONFIG.font.presets.map((scale) => ({
-        value: String(scale),
-        label: scale === 1 ? '100% (Default)' : `${Math.round(scale * 100)}%`,
-      })),
-      () => String(fontSizeSetting.get()),
-      (v) => fontSizeSetting.set(parseFloat(v))
-    );
-    card.appendChild(createSettingsRow('Article & Compose zoom', 'Zoom level for tweet articles and compose box', fontSizeCtrl.el));
+    // Article & Compose zoom (5%刻み)
+    const fontSizeCtrl = createSliderControl({
+      min: 50,
+      max: 200,
+      step: 5,
+      getValue: () => Math.round(fontSizeSetting.get() * 100),
+      setValue: (v) => fontSizeSetting.set(v / 100),
+      format: (v) => `${v}%`,
+    });
+    card.appendChild(createSettingsRow('Article & Compose zoom', 'Zoom level for tweet articles and compose box (5% steps)', fontSizeCtrl.el));
 
-    // Content width
-    const mediaWidthCtrl = createSelectControl(
-      CONFIG.media.presets.map((m) => ({ value: String(m.pct), label: `${m.label} (${m.pct}%)` })),
-      () => String(mediaPctSetting.get()),
-      (v) => mediaPctSetting.set(parseInt(v, 10))
-    );
-    card.appendChild(createSettingsRow('Content width', 'Width of media and content area', mediaWidthCtrl.el));
+    // Content width (5%刻み)
+    const mediaWidthCtrl = createSliderControl({
+      min: 50,
+      max: 100,
+      step: 5,
+      getValue: () => mediaPctSetting.get(),
+      setValue: (v) => mediaPctSetting.set(v),
+      format: (v) => `${v}%`,
+    });
+    card.appendChild(createSettingsRow('Content width', 'Width of media and content area (5% steps)', mediaWidthCtrl.el));
 
     // Reply @handle prefill
     const replyPrefillToggle = createToggleControl(replyPrefillEnabledSetting, 'ON', 'OFF');
@@ -720,24 +763,129 @@
     clearCacheBtn.addEventListener('click', clearOgpCache);
     card.appendChild(createSettingsRow('Link card cache', 'Clear cached link preview data', clearCacheBtn));
 
+    // Custom CSS
+    const customCssArea = document.createElement('textarea');
+    customCssArea.className = 'tt-custom-css-input';
+    customCssArea.value = GM_getValue(CONFIG.customCss.key, '');
+    customCssArea.placeholder = '/* 例: article { border-radius: 0; } */';
+    customCssArea.spellcheck = false;
+    customCssArea.style.cssText =
+      'width:100%;min-height:120px;box-sizing:border-box;padding:8px;' +
+      'font-family:monospace;font-size:12px;border-radius:8px;resize:vertical;';
+
+    const applyCssBtn = document.createElement('button');
+    applyCssBtn.type = 'button';
+    applyCssBtn.textContent = 'Apply';
+    applyCssBtn.className = SITE_BTN_CLASS;
+    applyCssBtn.style.cssText = 'align-self:flex-end;';
+    applyCssBtn.addEventListener('click', () => {
+      GM_setValue(CONFIG.customCss.key, customCssArea.value);
+      applyCustomCss();
+    });
+
+    const cssWrap = document.createElement('div');
+    cssWrap.style.cssText = 'display:flex;flex-direction:column;gap:8px;width:100%;';
+    cssWrap.dataset.wide = '1';
+    cssWrap.appendChild(customCssArea);
+    cssWrap.appendChild(applyCssBtn);
+    card.appendChild(createSettingsRow('Custom CSS', 'Extra CSS applied to tweet.app (press Apply to save)', cssWrap));
+
+
     section.appendChild(titleBlock);
     section.appendChild(card);
     return section;
   }
 
-  function injectSettingsSection() {
-    if (!location.pathname.startsWith('/settings')) return;
-    if (document.getElementById('tweetapp-enhancements-section')) return;
+  // ============================================================
+  // ナビ内メニュー: nav内の最後のbutton(Settings)の次に「Enhancer」項目を追加し、
 
-    // "Display" 見出しを目印に、同じflex-col gap-5コンテナへ追記
-    const displayHeading = Array.from(document.querySelectorAll('h4')).find(
-      (h) => h.textContent.trim() === 'Display'
-    );
-    const container = displayHeading?.closest('.flex.flex-col.gap-5');
-    if (!container) return;
+  function openEnhancerPanel() {
+    if (document.getElementById('tweetapp-enhancements-overlay')) return;
 
-    container.appendChild(buildSettingsSection());
+    const overlay = document.createElement('div');
+    overlay.id = 'tweetapp-enhancements-overlay';
+    overlay.style.cssText =
+      'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.45);' +
+      'display:flex;align-items:flex-start;justify-content:center;' +
+      'padding:24px 12px;box-sizing:border-box;overflow-y:auto;';
+
+    const panel = document.createElement('div');
+    panel.style.cssText =
+      'width:100%;max-width:560px;background:var(--color-tl-app-bg, #fff);' +
+      'border-radius:16px;padding:16px;box-sizing:border-box;position:relative;';
+
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.textContent = 'Close';
+    closeBtn.className = SITE_BTN_CLASS;
+    closeBtn.style.cssText = 'flex-shrink:0;';
+    closeBtn.addEventListener('click', () => overlay.remove());
+
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) overlay.remove();
+    });
+
+    const section = buildSettingsSection();
+    const titleBlock = section.firstElementChild;
+    const header = document.createElement('div');
+    header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;';
+    section.insertBefore(header, titleBlock);
+    header.appendChild(titleBlock);
+    header.appendChild(closeBtn);
+    panel.appendChild(section);
+    overlay.appendChild(panel);
+    document.body.appendChild(overlay);
   }
+
+  // 設定メニュー項目(Your account/Security/Display等)を含むnavを優先し、無ければ表示中のnavを使う
+  function findMenuNav() {
+    const navs = Array.from(document.querySelectorAll('nav')).filter((n) => n.querySelector('button'));
+    const settingsNav = navs.find((n) =>
+      Array.from(n.querySelectorAll('button')).some((b) =>
+        /^(Your account|Security|Display|Followed hashtags|Muted accounts)/.test(b.textContent.trim())
+      )
+    );
+    return settingsNav || navs.find((n) => n.offsetParent !== null) || null;
+  }
+
+  // 「Invite friends」ボタンを探す(PC/モバイルで nav タグの有無が変わるため、nav に依存しない)
+  function findInviteButton() {
+    return Array.from(document.querySelectorAll('button'))
+      .find((b) => b.textContent.trim().startsWith('Invite friends')) || null;
+  }
+
+  // Invite friendsの直後に「Enhancer」項目を追加する。既存項目の位置が違えば作り直す
+  function injectNavMenu() {
+    let anchor = findInviteButton();
+    if (!anchor) {
+      const nav = findMenuNav();
+      if (!nav) return;
+      const buttons = nav.querySelectorAll('button');
+      anchor = buttons[buttons.length - 1] || null;
+      if (!anchor) return;
+    }
+
+    const existing = document.getElementById('tweetapp-nav-menu');
+    if (existing) {
+      if (existing.previousElementSibling === anchor) return;
+      existing.remove();
+    }
+
+    const item = anchor.cloneNode(true);
+    item.id = 'tweetapp-nav-menu';
+    const icon = item.querySelector('svg');
+    if (icon) {
+      icon.setAttribute('class', 'lucide lucide-puzzle text-tl-app-text-muted shrink-0');
+      icon.innerHTML = '<path d="M4 8h4a2 2 0 1 1 4 0h4v4a2 2 0 1 1 0 4v4H4z"></path>';
+    }
+    const texts = item.querySelectorAll('span.flex.flex-col > span');
+    if (texts[0]) texts[0].textContent = 'Enhancer';
+    if (texts[1]) texts[1].textContent = 'Tweet.app Enhancer settings';
+    item.addEventListener('click', openEnhancerPanel);
+
+    anchor.insertAdjacentElement('afterend', item);
+  }
+
 
   // ============================================================
   // 通知バッジ増加のポップアップ通知
@@ -925,7 +1073,6 @@
 
   // ============================================================
   // OGPキャッシュ & リンクカード
-  // ============================================================
 
   const ogpCache = new Map();
 
@@ -1096,7 +1243,6 @@
 
   // ============================================================
   // 投稿(compose)欄の翻訳機能
-  // ============================================================
 
 
   function buildTranslateUrl(endpoint, text, lang) {
@@ -1228,7 +1374,6 @@
 
   function findActionBar(composeEl) {
     // compose要素から最も近い、Add Photo/Video/Poll のボタン群を探す
-    // TL内のみに存在（ポップアップにはない）
     
     let current = composeEl;
     while (current && current.tagName !== 'BODY') {
@@ -1395,7 +1540,6 @@
 
   // ============================================================
   // 複数画像のスワイプギャラリー
-  // ============================================================
 
 
   function findGalleryImages(article) {
@@ -1557,7 +1701,6 @@
 
   // ============================================================
   // リポスト非表示フィルター
-  // ============================================================
 
   function isRepostedArticle(article) {
     // articleの直下の span タグで "reposted" の表記を検索
@@ -1590,7 +1733,6 @@
 
   // ============================================================
   // インラインリプライ欄への@ハンドル自動入力
-  // ============================================================
 
   // aria-labelからハンドルを抽出するユーティリティ
   function extractHandleFromLabel(label) {
@@ -1599,8 +1741,6 @@
   }
 
   // textareaに対応するツイート投稿者ハンドルを取得する。
-  // インラインリプライ欄はarticle外(div[role="form"])に置かれるケースがあるため、
-  // 複数の経路で投稿者ボタンを探す。
   function findHandleForTextarea(textarea) {
     // 経路1: textarea が article 内にある場合 (旧来の構造)
     const article = textarea.closest('article');
@@ -1611,7 +1751,6 @@
     }
 
     // 経路2: textarea が div[role="form"] 内にあり、その祖先に投稿者ボタンがある場合
-    // (引用ツイートへのインラインリプライ等)
     const form = textarea.closest('[role="form"]');
     if (form) {
       // form の祖先を遡りながら "View @" ボタンを探す
@@ -1658,7 +1797,6 @@
 
   // ============================================================
   // DOM監視（最適化）
-  // ============================================================
 
   function handleAddedNode(node) {
     if (node.nodeType !== 1) return;
@@ -1672,13 +1810,13 @@
     processGalleryArticles(node);
     prefillInlineReplyHandles(node);
     applyHideRepostFilter(node);
-    injectSettingsSection();
+    injectNavMenu();
   }
 
   function handleRouteChange() {
     applyStyles();
     applyHideRepostFilter();
-    injectSettingsSection();
+    injectNavMenu();
   }
 
   function watchRouteChanges() {
@@ -1710,9 +1848,9 @@
 
   // ============================================================
   // 初期化
-  // ============================================================
 
   function init() {
+    applyCustomCss();
     loadOgpCacheFromStorage();
     applyStyles();
     applyAutoplaySetting();
@@ -1723,8 +1861,10 @@
     processComposeBoxes();
     processGalleryArticles();
     prefillInlineReplyHandles();
-    injectSettingsSection();
+    injectNavMenu();
     startNotificationPolling();
+    // 描画遅延対策: navが後から現れても確実に挿入されるよう定期的に再試行(挿入済みなら何もしない)
+    setInterval(injectNavMenu, 1000);
 
     requestAnimationFrame(() => {
       applyStyles();
