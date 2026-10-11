@@ -1,4 +1,4 @@
-// Tweet.app Enhancer (Chrome extension content script) v2.0.0
+// Tweet.app Enhancer (Chrome extension content script) v2.0.1
 
 (function () {
   'use strict';
@@ -830,6 +830,11 @@
     const header = document.createElement('div');
     header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;';
     section.insertBefore(header, titleBlock);
+    const versionLine = document.createElement('p');
+    versionLine.style.cssText = 'font-size:11px;color:var(--color-tl-app-text-muted);margin:0 0 12px;';
+    const storedVersion = GM_getValue(SITE_VERSION_KEY, '');
+    versionLine.textContent = 'tweet.app ' + (storedVersion || 'version: not recorded yet (open tweet.app Settings on PC once)');
+    section.insertBefore(versionLine, section.children[1] || null);
     header.appendChild(titleBlock);
     header.appendChild(closeBtn);
     panel.appendChild(section);
@@ -1053,6 +1058,36 @@
       toast.classList.remove('tt-toast-show');
       setTimeout(() => toast.remove(), 250);
     }, CONFIG.notificationToast.displayMs);
+  }
+
+  // tweet.appのフッター表記(例: v2.3.0 · 1791512375)を保存し、変化したら通知する
+  const SITE_VERSION_KEY = 'tweetapp_site_version';
+  const SITE_VERSION_PATTERN = /v\d+\.\d+\.\d+\s*·\s*\d+/;
+
+  function showToastMessage(text) {
+    document.querySelectorAll('.tt-notification-toast').forEach((el) => el.remove());
+    const toast = document.createElement('div');
+    toast.className = 'tt-notification-toast';
+    toast.textContent = text;
+    document.body.appendChild(toast);
+    playNotificationSound();
+    requestAnimationFrame(() => toast.classList.add('tt-toast-show'));
+    setTimeout(() => {
+      toast.classList.remove('tt-toast-show');
+      setTimeout(() => toast.remove(), 250);
+    }, CONFIG.notificationToast.displayMs);
+  }
+
+  function checkSiteVersion() {
+    const el = Array.from(document.querySelectorAll('aside p'))
+      .find((p) => SITE_VERSION_PATTERN.test(p.textContent));
+    if (!el) return;
+    const current = el.textContent.trim();
+    const stored = GM_getValue(SITE_VERSION_KEY, '');
+    if (current === stored) return;
+    GM_setValue(SITE_VERSION_KEY, current);
+    // 初回取得時は記録のみ。2回目以降の変化で通知する
+    if (stored) showToastMessage(`tweet.app updated: ${stored} → ${current}`);
   }
 
   function checkNotificationCount() {
@@ -1864,7 +1899,7 @@
     injectNavMenu();
     startNotificationPolling();
     // 描画遅延対策: navが後から現れても確実に挿入されるよう定期的に再試行(挿入済みなら何もしない)
-    setInterval(injectNavMenu, 1000);
+    setInterval(() => { injectNavMenu(); checkSiteVersion(); }, 1000);
 
     requestAnimationFrame(() => {
       applyStyles();
