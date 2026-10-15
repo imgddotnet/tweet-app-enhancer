@@ -1,4 +1,4 @@
-// Tweet.app Enhancer (Chrome extension content script) v2.0.1
+// Tweet.app Enhancer (Chrome extension content script) v2.1.0
 
 (function () {
   'use strict';
@@ -53,6 +53,14 @@
   // CONFIG
 
   const CONFIG = {
+    timeDisplay: {
+      enabledKey: 'tweetapp_time_enabled',
+      enabledDefault: true,
+    },
+    timeFormat: {
+      key: 'tweetapp_time_format',
+      default: '(YYYY-MM-DD hh:mm:ss)',
+    },
     customCss: {
       key: 'tweetapp_custom_css',
     },
@@ -172,6 +180,8 @@
     ? { get: () => false, set: () => {} }
     : createSetting(CONFIG.gallery.enabledKey, CONFIG.gallery.enabledDefault, () => {});
   const autogrowEnabledSetting = createSetting(CONFIG.autogrow.enabledKey, CONFIG.autogrow.enabledDefault, () => {});
+  const timeFormatSetting = createSetting(CONFIG.timeFormat.key, CONFIG.timeFormat.default, () => {});
+  const timeEnabledSetting = createSetting(CONFIG.timeDisplay.enabledKey, CONFIG.timeDisplay.enabledDefault, () => {});
   const hideRepostEnabledSetting = createSetting(CONFIG.hideRepost.enabledKey, CONFIG.hideRepost.enabledDefault, () => applyHideRepostFilter());
   const notificationToastEnabledSetting = createSetting(CONFIG.notificationToast.enabledKey, CONFIG.notificationToast.enabledDefault, () => {});
   const notificationSoundSetting = createSetting(CONFIG.notificationToast.soundKey, CONFIG.notificationToast.soundDefault, () => {});
@@ -763,6 +773,38 @@
     clearCacheBtn.addEventListener('click', clearOgpCache);
     card.appendChild(createSettingsRow('Link card cache', 'Clear cached link preview data', clearCacheBtn));
 
+    // Absolute time toggle
+    const timeToggle = createToggleControl(timeEnabledSetting, 'ON', 'OFF');
+    card.appendChild(createSettingsRow('Absolute time', 'Show absolute time after relative times', timeToggle.el));
+
+    // Absolute time format
+    const timeInput = document.createElement('input');
+    timeInput.type = 'text';
+    timeInput.value = timeFormatSetting.get();
+    timeInput.placeholder = '(YYYY-MM-DD hh:mm:ss)';
+    timeInput.spellcheck = false;
+    timeInput.style.cssText =
+      'width:100%;box-sizing:border-box;padding:8px;font-family:monospace;font-size:12px;border-radius:8px;';
+
+    const timeApplyBtn = document.createElement('button');
+    timeApplyBtn.type = 'button';
+    timeApplyBtn.textContent = 'Apply';
+    timeApplyBtn.className = SITE_BTN_CLASS;
+    timeApplyBtn.style.cssText = 'align-self:flex-end;';
+    timeApplyBtn.addEventListener('click', () => {
+      timeFormatSetting.set(timeInput.value.trim());
+      document.querySelectorAll('.tt-abs-time').forEach((el) => el.remove());
+      processAbsoluteTimes();
+    });
+
+    const timeWrap = document.createElement('div');
+    timeWrap.style.cssText = 'display:flex;flex-direction:column;gap:8px;width:100%;';
+    timeWrap.dataset.wide = '1';
+    timeWrap.appendChild(timeInput);
+    timeWrap.appendChild(timeApplyBtn);
+    card.appendChild(createSettingsRow('Absolute time format',
+      'Format incl. brackets, e.g. 3h (2026-10-14 17:00:00). Empty = off', timeWrap));
+
     // Custom CSS
     const customCssArea = document.createElement('textarea');
     customCssArea.className = 'tt-custom-css-input';
@@ -1076,6 +1118,51 @@
       toast.classList.remove('tt-toast-show');
       setTimeout(() => toast.remove(), 250);
     }, CONFIG.notificationToast.displayMs);
+  }
+
+  // 相対時間(title属性のISO時刻)の横に絶対時間を表示する
+  const ISO_TIME_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
+
+  // 形式(ISO 8601準拠): YYYY=年 MM=月 DD=日 hh=時 mm=分 ss=秒(大文字小文字を区別、端末のタイムゾーンで計算)
+  function formatAbsoluteTime(iso, fmt) {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return null;
+    const p = (n) => String(n).padStart(2, '0');
+    const values = {
+      YYYY: String(d.getFullYear()),
+      MM: p(d.getMonth() + 1),
+      DD: p(d.getDate()),
+      hh: p(d.getHours()),
+      mm: p(d.getMinutes()),
+      ss: p(d.getSeconds()),
+    };
+    return fmt.replace(/YYYY|MM|DD|hh|mm|ss/g, (t) => values[t]);
+  }
+
+  const ABS_TIME_STYLE = 'white-space:nowrap;font-size:10pt;margin-left:0.25em;';
+
+  function processAbsoluteTimes() {
+    if (['yyyy-mm-dd hh:mm:ss', 'YYYY-MM-DD hh:mm:ss'].includes(timeFormatSetting.get())) {
+      timeFormatSetting.set(CONFIG.timeFormat.default);
+    }
+    if (!timeEnabledSetting.get()) {
+      document.querySelectorAll('.tt-abs-time').forEach((el) => el.remove());
+      return;
+    }
+    document.querySelectorAll('.tt-abs-time').forEach((el) => { el.style.cssText = ABS_TIME_STYLE; });
+    const fmt = timeFormatSetting.get();
+    if (!fmt) return;
+    document.querySelectorAll('span[title]').forEach((el) => {
+      if (!ISO_TIME_PATTERN.test(el.title)) return;
+      if (el.querySelector(':scope > .tt-abs-time')) return;
+      const text = formatAbsoluteTime(el.title, fmt);
+      if (!text) return;
+      const abs = document.createElement('span');
+      abs.className = 'tt-abs-time';
+      abs.textContent = text;
+      abs.style.cssText = ABS_TIME_STYLE;
+      el.appendChild(abs);
+    });
   }
 
   function checkSiteVersion() {
@@ -1899,7 +1986,7 @@
     injectNavMenu();
     startNotificationPolling();
     // 描画遅延対策: navが後から現れても確実に挿入されるよう定期的に再試行(挿入済みなら何もしない)
-    setInterval(() => { injectNavMenu(); checkSiteVersion(); }, 1000);
+    setInterval(() => { injectNavMenu(); checkSiteVersion(); processAbsoluteTimes(); }, 1000);
 
     requestAnimationFrame(() => {
       applyStyles();
