@@ -1,4 +1,4 @@
-// Tweet.app Enhancer (Chrome extension content script) v2.1.0
+// Tweet.app Enhancer (Chrome extension content script) v2.2.0
 
 (function () {
   'use strict';
@@ -53,6 +53,14 @@
   // CONFIG
 
   const CONFIG = {
+    avatarShape: {
+      key: 'tweetapp_avatar_shape',
+      default: 'circle',
+    },
+    composeTab: {
+      enabledKey: 'tweetapp_compose_tab_enabled',
+      enabledDefault: true,
+    },
     timeDisplay: {
       enabledKey: 'tweetapp_time_enabled',
       enabledDefault: true,
@@ -121,7 +129,7 @@
       displayMs: 4000,
       soundKey: 'tweetapp_notification_sound',
       soundDefault: 'chime',
-      sounds: ['none', 'chime', 'drop', 'marimba', 'bell'],
+      sounds: ['none', 'chime', 'drop', 'marimba', 'bell', 'pop', 'sparkle', 'ping'],
     },
     translate: {
       key: 'tweetapp_compose_translate_lang',
@@ -182,6 +190,8 @@
   const autogrowEnabledSetting = createSetting(CONFIG.autogrow.enabledKey, CONFIG.autogrow.enabledDefault, () => {});
   const timeFormatSetting = createSetting(CONFIG.timeFormat.key, CONFIG.timeFormat.default, () => {});
   const timeEnabledSetting = createSetting(CONFIG.timeDisplay.enabledKey, CONFIG.timeDisplay.enabledDefault, () => {});
+  const composeTabSetting = createSetting(CONFIG.composeTab.enabledKey, CONFIG.composeTab.enabledDefault, () => {});
+  const avatarShapeSetting = createSetting(CONFIG.avatarShape.key, CONFIG.avatarShape.default, () => {});
   const hideRepostEnabledSetting = createSetting(CONFIG.hideRepost.enabledKey, CONFIG.hideRepost.enabledDefault, () => applyHideRepostFilter());
   const notificationToastEnabledSetting = createSetting(CONFIG.notificationToast.enabledKey, CONFIG.notificationToast.enabledDefault, () => {});
   const notificationSoundSetting = createSetting(CONFIG.notificationToast.soundKey, CONFIG.notificationToast.soundDefault, () => {});
@@ -511,6 +521,9 @@
   function applyFontSizeToComposers(root = document) {
     const scaledPx = Math.round(CONFIG.font.composerBasePx * fontSizeSetting.get());
     root.querySelectorAll?.(CONFIG.composer.textareaSelector).forEach((textarea) => {
+      // 設定画面のテキストエリアは対象外(倍率を掛けない)
+      if (textarea.closest('#tweetapp-enhancements-overlay')) return;
+      // article内の欄はarticleのzoomで拡大されるため、基準pxのまま(倍率を掛けると二重拡大になる)
       const fontSizePx = textarea.closest('article') ? CONFIG.font.composerBasePx : scaledPx;
       setFontStyle(textarea, fontSizePx);
       textarea.parentElement?.querySelectorAll('*').forEach((el) => setFontStyle(el, fontSizePx));
@@ -658,6 +671,57 @@
     styleTag.textContent = GM_getValue(CONFIG.customCss.key, '');
   }
 
+  // アバターの形: 丸(既定) / 角丸四角形 / 四角形
+  const AVATAR_SHAPE_CSS = {
+    circle: '',
+    rounded:
+      'img[alt$="avatar"], div.relative.inline-flex.shrink-0.isolate > button img[alt$="avatar"], div.relative.inline-flex.shrink-0.isolate > img[alt$="avatar"], div[role="form"] img[alt$="avatar"], button[aria-label="Open profile menu"] img[alt$="avatar"] { border-radius: 12px !important; }' +
+      'div.relative.inline-flex.shrink-0.isolate > button, button[aria-label="Open profile menu"] { border-radius: 12px !important; }',
+    square:
+      'img[alt$="avatar"], div.relative.inline-flex.shrink-0.isolate > button img[alt$="avatar"], div.relative.inline-flex.shrink-0.isolate > img[alt$="avatar"], div[role="form"] img[alt$="avatar"], button[aria-label="Open profile menu"] img[alt$="avatar"] { border-radius: 0 !important; }' +
+      'div.relative.inline-flex.shrink-0.isolate > button, button[aria-label="Open profile menu"] { border-radius: 0 !important; }',
+  };
+
+  function applyAvatarShape() {
+    let styleTag = document.getElementById('tweetapp-avatar-shape');
+    if (!styleTag) {
+      styleTag = document.createElement('style');
+      styleTag.id = 'tweetapp-avatar-shape';
+      (document.head || document.documentElement).appendChild(styleTag);
+    }
+    styleTag.textContent = AVATAR_SHAPE_CSS[avatarShapeSetting.get()] || '';
+  }
+
+  // 設定項目の並び(実験的機能は末尾にまとめる)。ここに無い項目(Swipe gallery)は表示しない
+  const SETTINGS_ORDER = [
+    'Article & Compose zoom', 'Avatar shape', 'Content width', 'Time stamp', 'Time stamp format',
+    'Hide reposts', 'Video/GIF autoplay', 'Link card previews', 'Link card cache',
+    'Always-visible composer', 'Auto-grow textarea', 'Reply @handle prefill', 'Translate target language',
+    'Notification popup', 'Notification sound',
+    '__experimental__',
+    'Compose in new tab', 'Custom CSS',
+  ];
+
+  function arrangeSettingsCard(card) {
+    const rowsByTitle = new Map();
+    Array.from(card.children).forEach((row) => {
+      const title = row.querySelector('span.font-bold');
+      if (title) rowsByTitle.set(title.textContent.trim(), row);
+    });
+    card.innerHTML = '';
+    SETTINGS_ORDER.forEach((key) => {
+      if (key === '__experimental__') {
+        const heading = document.createElement('div');
+        heading.textContent = 'Experimental';
+        heading.style.cssText = 'padding:12px 16px 4px;font-size:12px;font-weight:700;color:var(--color-tl-app-text-muted);';
+        card.appendChild(heading);
+        return;
+      }
+      const row = rowsByTitle.get(key);
+      if (row) card.appendChild(row);
+    });
+  }
+
   function buildSettingsSection() {
     const section = document.createElement('div');
     section.id = 'tweetapp-enhancements-section';
@@ -773,9 +837,13 @@
     clearCacheBtn.addEventListener('click', clearOgpCache);
     card.appendChild(createSettingsRow('Link card cache', 'Clear cached link preview data', clearCacheBtn));
 
+    // Compose in new tab toggle
+    const composeTabToggle = createToggleControl(composeTabSetting, 'ON', 'OFF');
+    card.appendChild(createSettingsRow('Compose in new tab', 'Open the tweet box in a new tab; closes after posting', composeTabToggle.el));
+
     // Absolute time toggle
     const timeToggle = createToggleControl(timeEnabledSetting, 'ON', 'OFF');
-    card.appendChild(createSettingsRow('Absolute time', 'Show absolute time after relative times', timeToggle.el));
+    card.appendChild(createSettingsRow('Time stamp', 'Show absolute time after relative times', timeToggle.el));
 
     // Absolute time format
     const timeInput = document.createElement('input');
@@ -802,8 +870,20 @@
     timeWrap.dataset.wide = '1';
     timeWrap.appendChild(timeInput);
     timeWrap.appendChild(timeApplyBtn);
-    card.appendChild(createSettingsRow('Absolute time format',
+    card.appendChild(createSettingsRow('Time stamp format',
       'Format incl. brackets, e.g. 3h (2026-10-14 17:00:00). Empty = off', timeWrap));
+
+    // Avatar shape
+    const avatarShapeCtrl = createSelectControl(
+      [
+        { value: 'circle', label: 'Circle (default)' },
+        { value: 'rounded', label: 'Rounded square' },
+        { value: 'square', label: 'Square' },
+      ],
+      () => avatarShapeSetting.get(),
+      (v) => { avatarShapeSetting.set(v); applyAvatarShape(); }
+    );
+    card.appendChild(createSettingsRow('Avatar shape', 'Shape of profile avatars', avatarShapeCtrl.el));
 
     // Custom CSS
     const customCssArea = document.createElement('textarea');
@@ -834,6 +914,7 @@
 
 
     section.appendChild(titleBlock);
+    arrangeSettingsCard(card);
     section.appendChild(card);
     return section;
   }
@@ -922,8 +1003,9 @@
     item.id = 'tweetapp-nav-menu';
     const icon = item.querySelector('svg');
     if (icon) {
-      icon.setAttribute('class', 'lucide lucide-puzzle text-tl-app-text-muted shrink-0');
-      icon.innerHTML = '<path d="M4 8h4a2 2 0 1 1 4 0h4v4a2 2 0 1 1 0 4v4H4z"></path>';
+      icon.setAttribute('class', 'lucide lucide-puzzle shrink-0');
+      icon.setAttribute('style', 'color:#1da1f2;');
+      icon.innerHTML = '<path d="M4 8h4a2 2 0 1 1 4 0h4v4a2 2 0 1 1 0 4v4H4z" fill="#1da1f2" stroke="#1da1f2"></path>';
     }
     const texts = item.querySelectorAll('span.flex.flex-col > span');
     if (texts[0]) texts[0].textContent = 'Enhancer';
@@ -1058,7 +1140,44 @@
       playBellNote(ctx, 329.63, t);
       playBellNote(ctx, 392.00, t + 0.15, 0.22);
     },
+    // ポップ: 低めから跳ね上がる軽い泡音
+    pop: () => {
+      const ctx = ensureAudioCtx(); if (!ctx) return;
+      playSweepNote(ctx, 520, 1400, ctx.currentTime, 0.12, 0.3);
+    },
+    // スパークル: 高音のキラキラした上昇アルペジオ
+    sparkle: () => {
+      const ctx = ensureAudioCtx(); if (!ctx) return;
+      const t = ctx.currentTime;
+      [1046.5, 1318.5, 1568.0, 2093.0].forEach((f, i) =>
+        playSweepNote(ctx, f, f * 1.02, t + i * 0.055, 0.14, 0.18, 'triangle'));
+    },
+    // ピン: 金属的な倍音を持つ鐘型の「チン」(ピッチ変化なし、余韻あり)
+    ping: () => {
+      const ctx = ensureAudioCtx(); if (!ctx) return;
+      const t = ctx.currentTime;
+      const f = 1760;
+      playSweepNote(ctx, f, f, t, 0.35, 0.22, 'sine');
+      playSweepNote(ctx, f * 2.76, f * 2.76, t, 0.2, 0.08, 'sine');
+      playSweepNote(ctx, f * 5.40, f * 5.40, t, 0.1, 0.03, 'sine');
+    },
   };
+
+  // 周波数が跳ねる短い音(pop用)
+  function playSweepNote(ctx, fromFreq, toFreq, startTime, duration, gain = 0.25, type = 'sine') {
+    const osc = ctx.createOscillator();
+    const env = ctx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(fromFreq, startTime);
+    osc.frequency.exponentialRampToValueAtTime(toFreq, startTime + duration * 0.5);
+    env.gain.setValueAtTime(0.0001, startTime);
+    env.gain.exponentialRampToValueAtTime(gain, startTime + 0.01);
+    env.gain.exponentialRampToValueAtTime(0.001, startTime + duration);
+    osc.connect(env);
+    env.connect(ctx.destination);
+    osc.start(startTime);
+    osc.stop(startTime + duration + 0.02);
+  }
 
   function playNotificationSound() {
     try {
@@ -1111,6 +1230,7 @@
     const toast = document.createElement('div');
     toast.className = 'tt-notification-toast';
     toast.textContent = text;
+    toast.style.cssText = 'white-space:pre-line;text-align:center;line-height:1.5;width:max-content;max-width:90vw;height:auto;';
     document.body.appendChild(toast);
     playNotificationSound();
     requestAnimationFrame(() => toast.classList.add('tt-toast-show'));
@@ -1165,6 +1285,64 @@
     });
   }
 
+  // 投稿を別タブで開く。新タブでは投稿欄のみ表示し、投稿欄が閉じたらタブを閉じる
+  const COMPOSE_PARAM = 'tt_compose';
+
+  function isComposeTabMode() {
+    return new URLSearchParams(location.search).has(COMPOSE_PARAM);
+  }
+
+  function interceptComposeClick() {
+    document.addEventListener('click', (e) => {
+      if (!composeTabSetting.get()) return;
+      if (isComposeTabMode()) return;
+      const btn = e.target.closest && e.target.closest('#public-sidebar-compose-btn, #public-mobile-compose-btn');
+      if (!btn) return;
+      e.preventDefault();
+      e.stopPropagation();
+      // 別ウインドウ指定(Macでは別ウインドウ、iPadではタブになる)。同名で開き直すと同じウインドウを再利用
+      const W = 560, H = 600;
+      const left = Math.round(screen.width / 2 - W / 2);
+      const top = Math.round(screen.height / 2 - H / 2);
+      window.open(
+        `${location.origin}${location.pathname}?${COMPOSE_PARAM}=1`,
+        'tt_compose',
+        `left=${left},top=${top},width=${W},height=${H},menubar=no,toolbar=no,location=yes,status=no,scrollbars=yes,resizable=yes`
+      );
+    }, true);
+  }
+
+  function runComposeTabMode() {
+    const style = document.createElement('style');
+    style.textContent =
+      'body.tt-compose-only #root-container { visibility: hidden !important; }' +
+      'body.tt-compose-only [data-tt-compose-keep] { visibility: visible !important; }';
+    document.head.appendChild(style);
+    document.body.classList.add('tt-compose-only');
+
+    const openTimer = setInterval(() => {
+      const btn = document.getElementById('public-sidebar-compose-btn') || document.getElementById('public-mobile-compose-btn');
+      if (!btn) return;
+      clearInterval(openTimer);
+      btn.click();
+    }, 200);
+
+    let shown = false;
+    const watchTimer = setInterval(() => {
+      const ta = document.getElementById('public-modal-tweet-input');
+      if (ta) {
+        shown = true;
+        const overlay = ta.closest('.fixed');
+        if (overlay) overlay.setAttribute('data-tt-compose-keep', '');
+        return;
+      }
+      if (shown) {
+        clearInterval(watchTimer);
+        window.close();
+      }
+    }, 300);
+  }
+
   function checkSiteVersion() {
     const el = Array.from(document.querySelectorAll('aside p'))
       .find((p) => SITE_VERSION_PATTERN.test(p.textContent));
@@ -1174,7 +1352,7 @@
     if (current === stored) return;
     GM_setValue(SITE_VERSION_KEY, current);
     // 初回取得時は記録のみ。2回目以降の変化で通知する
-    if (stored) showToastMessage(`tweet.app updated: ${stored} → ${current}`);
+    if (stored) showToastMessage(`tweet.app updated:\n${stored} →\n${current}`);
   }
 
   function checkNotificationCount() {
@@ -1973,6 +2151,8 @@
 
   function init() {
     applyCustomCss();
+    applyAvatarShape();
+    if (isComposeTabMode()) runComposeTabMode(); else interceptComposeClick();
     loadOgpCacheFromStorage();
     applyStyles();
     applyAutoplaySetting();
