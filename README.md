@@ -1,121 +1,134 @@
 # Tweet.app Enhancer
 
-[app.tweet.app](https://app.tweet.app) 向けの機能拡張です。フォントサイズ・コンテンツ幅の調整、リンクカード表示、常時表示の投稿欄、投稿の翻訳挿入、複数画像のスワイプ表示、インラインリプライへの`@handle`自動入力を追加します。すべての設定はアプリの `/settings` ページ内から切り替えられます。
+app.tweet.app を見やすく、使いやすくするためのユーザースクリプトです。
+Tampermonkey 向けの userscript と、Chrome 拡張機能の2形式で配布します。
 
-An enhancement for [app.tweet.app](https://app.tweet.app) that adds font size / content width adjustment, link preview cards, an always-visible composer, compose-time translation, a swipeable multi-photo gallery, and automatic `@handle` prefill for inline replies. All features are toggled from the app's own `/settings` page.
+- バージョン: 2.3.0
+- ライセンス: MIT
+- 対象: https://app.tweet.app/*
 
-2種類の配布形態があり、機能・設定項目・デフォルト値は完全に同一です。
-
-Two distribution formats are available, with identical features, settings, and defaults.
-
-| | userscript版 | Chrome拡張版 |
-|---|---|---|
-| フォルダ / Folder | `/userscript` | `/chrome-extension` |
-| 必要なもの / Requires | Tampermonkey等のユーザースクリプトマネージャー / A userscript manager (e.g. Tampermonkey) | Chromeのみ(デベロッパーモードで読み込み) / Chrome only (loaded in Developer mode) |
-| 動作確認環境 / Tested on | iPad Safari + Tampermonkey | (Chrome — 動作確認環境は各自の利用環境による / see disclaimer below) |
-
-## 免責事項 / Disclaimer
-
-**無保証・無サポートです。自己責任でご利用ください。**
-userscript版は **iPad版Safari + Tampermonkey機能拡張の組み合わせでのみ** 動作確認をしています。他の環境(Mac/iPhone版Safari、他ブラウザ、他のユーザースクリプトマネージャー等)での動作は未確認です。Chrome拡張版も同様に、限定的な環境でのみ動作確認をしています。`app.tweet.app`側の仕様変更により、いずれの版も予告なく動作しなくなる可能性があります。
-
-**Provided as-is, with no warranty and no support.** Use at your own risk.
-The userscript version has only been tested on **iPad Safari with the Tampermonkey extension**. Behavior on other environments (Mac/iPhone Safari, other browsers, other userscript managers) is unverified. The Chrome extension version has likewise only been tested in a limited environment. Either version may stop working without notice if `app.tweet.app` changes its markup or behavior.
+> 本スクリプトは非公式です。tweet.app および関連サービスとは無関係で、各サービスの公式な支援や保証はありません。
 
 ---
 
-## userscript版のインストール / Installing the userscript
+## 主な機能
 
-1. TampermonkeyをSafariに導入(App Store)
-   
-   Install the Tampermonkey extension for Safari (App Store)
-3. Tampermonkeyメニュー→「新規スクリプトを追加」
-   
-   Tampermonkey menu → "Create a new script"
-5. `/userscript/tweet-app-enhancer_user.js` の内容を貼り付けて保存(Cmd+S)
-   
-   Paste the contents of `/userscript/tweet-app-enhancer_user.js` and save (Cmd+S)
-7. `app.tweet.app` を開くと自動的に有効化
-   
-   Open `app.tweet.app` — the script activates automatically
-
-## Chrome拡張版のインストール / Installing the Chrome extension
-
-Tampermonkey不要で、`/chrome-extension` フォルダをそのままパッケージ化されていない拡張機能として読み込みます。
-
-No Tampermonkey required — load the `/chrome-extension` folder directly as an unpacked extension.
-
-1. このリポジトリをクローンまたはダウンロード
-   
-   Clone or download this repository
-3. `chrome://extensions` を開く
-   
-   Open `chrome://extensions`
-5. 右上の「デベロッパーモード」をONにする
-   
-   Turn on "Developer mode" (top right)
-7. 「パッケージ化されていない拡張機能を読み込む」をクリックし、`/chrome-extension` フォルダを選択
-   
-   Click "Load unpacked" and select the `/chrome-extension` folder
-9. `app.tweet.app` を開くと自動的に有効化
-    
-   Open `app.tweet.app` — the extension activates automatically
-
-### Chrome拡張版の構成 / Chrome extension contents
-
-- `manifest.json` — 拡張機能の定義(Manifest V3、アイコン指定なし。Chrome既定のアイコンで表示されます) / extension definition (Manifest V3, no icon entries — uses Chrome's default icon)
-- `content.js` — app.tweet.app に注入されるメインスクリプト(userscript本体の移植版) / main script injected into app.tweet.app (ported from the userscript)
-- `background.js` — 翻訳API・リンク先ページのfetchを中継するservice worker / service worker that relays fetches for the translate API and linked pages
-
-userscript版との技術的な違いは通信・保存方式のみです: `GM_setValue`/`GM_getValue` → `chrome.storage.local`、`GM_xmlhttpRequest` → `background.js`経由の`fetch`。
-
-The only technical differences from the userscript are storage and networking: `GM_setValue`/`GM_getValue` → `chrome.storage.local`, and `GM_xmlhttpRequest` → `fetch` relayed through `background.js`.
+| 機能 | 内容 |
+|---|---|
+| 文字サイズ・コンテンツ幅 | 記事と投稿欄の拡大率(5%刻み)、画像・メディアの幅(5%刻み) |
+| アバターの形 | 丸(既定)・角丸四角・四角から選択。プロフィール、投稿欄、ヘッダ等のアバターに適用 |
+| 投稿欄の常時表示 | フィードの上部に投稿欄を常に表示/非表示 |
+| 投稿欄の自動拡張 | 複数行入力で入力欄が下方向に伸びる(上端は固定、初期状態はOFF) |
+| 翻訳挿入 | 投稿欄の下書きを指定言語に翻訳し、本文へ挿入 |
+| GIF 検索・添付 | 投稿欄から Tenor の GIF を検索して添付(初期状態はOFF) |
+| 別ウインドウで投稿 | 投稿ボタンを押すと、投稿欄だけを別ウインドウ(iPad はタブ)で開く。投稿後に閉じる(初期状態はOFF) |
+| 返信 @ハンドル入力 | インライン返信欄に @ハンドルを自動入力 |
+| リンクカード | 投稿内のリンクの OGP 情報をカード表示(キャッシュ付き) |
+| 動画・GIF 自動再生 | 記事内の動画/GIF の自動再生を ON/OFF |
+| 非表示フィルター | リポスト記事、ゲームカード(TWIRDLE 等)を非表示(ゲームカードの非表示は初期状態でOFF) |
+| 時刻表示 | 相対時刻の横に絶対時刻を表示(初期状態はOFF)。形式は自由に指定可能(既定の形式: `(YYYY-MM-DD hh:mm:ss)`) |
+| 通知ポップアップ | 通知件数が増えるとポップアップ表示。通知音 8 種類から選択、試聴可能 |
+| 更新通知 | tweet.app のバージョン表記が変わるとポップアップと通知音でお知らせ |
+| カスタム CSS | 任意の CSS を適用 |
 
 ---
 
-## 機能と設定 / Features & Settings
+## 導入方法
 
-`/settings` ページの「Display」セクション内に **Tweet.app Enhancements** というカードが追加されます(userscript版・Chrome拡張版共通)。
+### userscript 版(Tampermonkey)
 
-A **Tweet.app Enhancements** card is added under the "Display" section of the `/settings` page (identical in both versions).
+1. Safari(Mac/iPhone/iPad)または Chrome に Tampermonkey を入れる。
+2. `tweet-app-enhancer_user.js` の内容を、Tampermonkey の新規スクリプトに貼り付けて保存する。
+   - Tampermonkey の「ユーティリティ」タブからファイルをインポートすることもできます。
+3. app.tweet.app を開き直す。
 
-| 設定 / Setting | 説明 / Description | 初期値 / Default |
-|---|---|---|
-| Article & Compose zoom | ツイート表示全体・投稿欄の拡大率(100/110/120/125/130/150%) / Zoom level for tweet articles and compose box (100/110/120/125/130/150%) | 100% (Default) |
-| Content width | 画像・動画・リンクカードの表示幅(記事内、News/Sportsタブのリンクカードにも適用) / Width of media and link cards (applies both inside tweets and in the News/Sports tab link cards) | Default (100%) |
-| Reply @handle prefill | インラインリプライ欄に相手の`@handle`を自動入力 / Prefill `@handle` when replying inline | OFF |
-| Translate target language | 投稿翻訳の翻訳先言語(Noneで非表示) / Language used when translating your draft (None hides the button) | English |
-| Always-visible composer | フィード最上部の投稿欄を常時表示 / Keep the tweet box visible at the top of the feed | ON |
-| Swipe gallery | 複数画像ツイートをスワイプ/キーボードで切替表示 / Swipe or use arrow keys to browse multi-photo tweets | OFF |
-| Video/GIF autoplay | スクロール中の動画・GIF自動再生 / Autoplay videos and GIFs while scrolling | ON |
-| Link card previews | 本文URLのOGPリンクカード表示 / Show OGP preview cards for links in tweet text | OFF |
-| Link card cache | リンクカードのキャッシュをクリア / Clear cached link preview data | (操作ボタン / action button) |
+### Chrome 拡張機能版
 
-投稿欄には翻訳ボタンも追加され、押すと選択言語への翻訳をプレビューし、再度押すと投稿欄末尾に挿入します。
+1. zip を展開する。
+2. Chrome で `chrome://extensions` を開き、「デベロッパーモード」を ON にする。
+3. 「パッケージ化されていない拡張機能を読み込む」で、展開したフォルダを選ぶ。
+4. app.tweet.app を開き直す。
 
-The compose box also gets a translate button: tap it to preview a translation in the target language, tap the preview to insert it at the end of your draft.
+> Chrome 拡張機能版は、デスクトップ版 Chrome 向けです。iPhone/iPad では userscript 版を使用してください。
 
-## 仕組み / How it works
+---
 
-- 投稿翻訳はGoogle翻訳の非公式エンドポイント(`translate.googleapis.com`)を使用し、レート制限(HTTP 429)時は別エンドポイント(`clients5.google.com`)へ自動フォールバックします。
-  
-  Translation uses Google Translate's unofficial endpoint (`translate.googleapis.com`), with automatic fallback to a secondary endpoint (`clients5.google.com`) when rate-limited (HTTP 429).
-- リンクカードはfetchしたページのOGPタグを解析し、キャッシュします(userscript版: GM storage / Chrome拡張版: `chrome.storage.local`)。
-  
-  Link cards are built by fetching and parsing OGP tags from the linked page, then cached (userscript: GM storage / Chrome extension: `chrome.storage.local`).
+## 設定
 
-## 注意 / Notes
+設定はサイドバーの **Enhancer** メニューから開きます(iPhone/iPad では、下部ナビや画面上部の表示位置から開く場合があります)。
+パネルは次の順に並んでいます。
 
-- 非公式のGoogle翻訳エンドポイントに依存しているため、Google側の仕様変更で翻訳機能が動作しなくなる可能性があります。
-  
-  Relies on an unofficial Google Translate endpoint and may break if Google changes its response format.
-- `app.tweet.app` のDOM構造変更により、機能の一部またはすべてが動作しなくなる可能性があります。
-  
-  Features may break if `app.tweet.app` changes its DOM structure.
-- Issue・PR等によるサポートは行っていません。
-  
-  No support is provided via issues or pull requests.
+- **表示・レイアウト**: Article & Compose zoom / Avatar shape / Content width / Time stamp / Time stamp format / Hide reposts / Hide games / Video/GIF autoplay / Link card previews / Link card cache
+- **投稿欄**: Always-visible composer / Auto-grow textarea / Reply @handle prefill / Translate target language
+- **通知**: Notification popup / Notification sound
+- **Experimental(実験的機能)**: GIF button / Compose in new tab / Custom CSS
 
-## License
+各設定は、変更すると即座に反映されます。設定値は保存され、再読み込み後も保持されます。
 
-MIT
+---
+
+## 仕組み
+
+### GIF 検索・添付(Tenor)
+
+- Tenor の API は終了しているため、Tenor の検索ページに埋め込まれている `store-cache` を読み取って検索結果を取得します。
+- 検索結果の URL を投稿本文へ入れるのではなく、GIF を実際にダウンロードして File 化し、tweet.app 自身のファイル入力へ設定します。
+- 投稿欄に属するファイル入力は 1 つだけ処理します。複数のファイル入力に同じ GIF を設定すると、tweet.app が「GIFs cannot be combined」と表示することがあるためです。
+- 表示された赤いエラーメッセージは、自動で取り除きます。
+
+### 別ウインドウでの投稿
+
+- 投稿ボタン(`#public-sidebar-compose-btn` / `#public-mobile-compose-btn`)のクリックを横取りし、`?tt_compose=1` を付けた tweet.app を別ウインドウで開きます。
+- 別ウインドウでは投稿ボタンを自動で押し、投稿欄以外の画面を見えなくします。
+- 投稿欄が閉じた時点(投稿後またはキャンセル後)で、ウインドウを閉じます。
+
+### 通知と更新通知
+
+- 1 秒ごとに、通知バッジの件数と tweet.app のフッターにあるバージョン表記を確認します。
+- 通知件数が増えた場合は、通知ポップアップと通知音で知らせます。
+- バージョン表記が変わった場合は、更新内容をポップアップで知らせます。初回の取得時は記録のみで、通知は出しません。
+
+### 設定の保存
+
+- userscript 版は `GM_getValue` / `GM_setValue` を使います。
+- Chrome 拡張機能版は、互換レイヤーを通して `chrome.storage.local` を使います。起動時に保存値をまとめて読み込みます。
+
+### 外部との通信
+
+- 翻訳には Google の翻訳エンドポイントを使います。応答が 429 の場合は、別のエンドポイントに切り替えて再試行します。
+- リンクカードでは、投稿内の外部リンク先の HTML を取得して OGP 情報を読み取ります。
+- GIF では Tenor の検索ページと GIF 本体を取得します。
+- Chrome 拡張機能版では、これらの取得を `background.js` 経由で行います。ページの CSP や CORS の影響を受けないようにするためです。
+
+---
+
+## 注意
+
+- **非公式です。** tweet.app の画面構造が変わると、一部の機能が動かなくなることがあります。特に、投稿欄やボタンの ID(`public-modal-tweet-input`、`public-sidebar-compose-btn` など)に依存しています。
+- **GIF 検索は Tenor の仕様に依存します。** Tenor 側の表示形式が変わると、検索結果が取得できなくなることがあります。
+- **GIF ボタンは初期状態で OFF です。** Experimental の「GIF button」を ON にすると表示されます。
+- **別ウインドウでの投稿は、投稿欄が閉じると必ずウインドウを閉じます。** キャンセルした場合も閉じます。下書きは元のウインドウと共有されません。
+- **翻訳は無料の非公式エンドポイントを使います。** 利用回数の制限により、失敗することがあります。
+- **ブラウザによって挙動が異なります。** 別ウインドウは Mac Safari では別ウインドウ、iPad Safari ではタブで開きます。
+- **通知音は、ページ上での操作後に再生されます。** ブラウザの自動再生制限により、最初のクリックやキー操作の前は鳴らないことがあります。
+- **Chrome 拡張機能版は Chrome Web Store では配布していません。** 上記の手順で手動で読み込んでください。
+- 本スクリプトを使うことによる、アカウントや利用規約への影響について、作者は責任を負いません。
+
+---
+
+## ファイル構成
+
+```
+tweet-app-enhancer_user.js   userscript 本体(Tampermonkey 用)
+content.js                   Chrome 拡張機能の content script
+background.js                Chrome 拡張機能の service worker(HTTP 取得の中継)
+manifest.json                Chrome 拡張機能のマニフェスト
+notification-sound-demo.html 通知音の試聴用デモ(任意)
+README.md                    このファイル
+```
+
+---
+
+## ライセンス
+
+MIT License
