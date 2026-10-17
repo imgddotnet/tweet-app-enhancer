@@ -1,10 +1,10 @@
-// Tweet.app Enhancer (Chrome extension content script) v2.2.0
+// Tweet.app Enhancer (Chrome extension content script) v2.3.0
 
 (function () {
   'use strict';
 
   // ============================================================
-  // GM_* 互換レイヤー (chrome.storage.local ベース)
+  // GM_* 互換レイヤー (chrome.storage.local / background.js 経由の HTTP 取得)
 
   const __settingsCache = {};
 
@@ -26,32 +26,52 @@
     });
   }
 
-  // background.js経由でfetchする(ページのCSPやCORSの影響を受けない)
-  function bgFetch(url) {
-    return new Promise((resolve, reject) => {
-      try {
-        chrome.runtime.sendMessage({ type: 'tt-fetch', url }, (response) => {
+  // background.js 経由で取得する(ページのCSPやCORSの影響を受けない)。
+  // responseType: 'blob' の場合は res.response に Blob を入れる(GIF取得用)。
+  function GM_xmlhttpRequest(opts) {
+    const wantBlob = opts.responseType === 'blob';
+    const fail = (message) => {
+      if (opts.onerror) opts.onerror(new Error(message));
+    };
+    try {
+      chrome.runtime.sendMessage(
+        { type: 'tt-fetch', url: opts.url, binary: wantBlob },
+        (response) => {
           if (chrome.runtime.lastError) {
-            reject(chrome.runtime.lastError.message);
+            fail(chrome.runtime.lastError.message);
             return;
           }
-          if (!response) { reject('no response'); return; }
-          if (response.error) { reject(response.error); return; }
-          resolve(response);
-        });
-      } catch (e) {
-        reject(e);
-      }
-    });
+          if (!response || response.error) {
+            fail(response?.error || 'no response');
+            return;
+          }
+          const res = {
+            status: response.status,
+            responseText: response.text || '',
+            responseHeaders: response.headers || '',
+            finalUrl: response.finalUrl || opts.url,
+          };
+          if (wantBlob) {
+            const binary = atob(response.base64 || '');
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) {
+              bytes[i] = binary.charCodeAt(i);
+            }
+            res.response = new Blob([bytes], { type: response.contentType || '' });
+          }
+          if (opts.onload) opts.onload(res);
+        }
+      );
+    } catch (e) {
+      fail(String(e));
+    }
   }
 
   loadSettingsCache().then(runContentScript);
 
   function runContentScript() {
-
   // ============================================================
   // CONFIG
-
   const CONFIG = {
     avatarShape: {
       key: 'tweetapp_avatar_shape',
@@ -59,11 +79,11 @@
     },
     composeTab: {
       enabledKey: 'tweetapp_compose_tab_enabled',
-      enabledDefault: true,
+      enabledDefault: false,
     },
     timeDisplay: {
       enabledKey: 'tweetapp_time_enabled',
-      enabledDefault: true,
+      enabledDefault: false,
     },
     timeFormat: {
       key: 'tweetapp_time_format',
@@ -74,14 +94,14 @@
     },
     autogrow: {
       enabledKey: 'tweetapp_autogrow_enabled',
-      enabledDefault: true,
+      enabledDefault: false,
     },
     font: {
       key: 'tweetapp_article_scale',
       default: 1,
       presets: [1, 1.10, 1.20, 1.25, 1.30, 1.50],
       labels: ['Default', '', '', '', '', ''],
-      composerBasePx: 15, // 投稿欄の入力テキストはズーム対象外なのでpx換算して適用
+      composerBasePx: 15,
     },
     media: {
       key: 'tweetapp_media_width_pct',
@@ -96,9 +116,10 @@
       enabledKey: 'tweetapp_linkcard_enabled',
       enabledDefault: false,
       className: 'ogp-link-card',
-      cacheKey: 'tweetapp_ogp_cache_v1',
+      cacheKey: 'tweetapp_ogp_cache_v2',
       cacheMaxEntries: 300,
       cacheTtlMs: 7 * 24 * 60 * 60 * 1000,
+      fetchTimeoutMs: 15000,
     },
     composer: {
       visibleKey: 'tweetapp_composer_visible',
@@ -114,12 +135,17 @@
       enabledKey: 'tweetapp_reply_prefill_enabled',
       enabledDefault: false,
     },
-    gallery: {
-      enabledKey: 'tweetapp_gallery_enabled',
-      enabledDefault: false,
-    },
     hideRepost: {
       enabledKey: 'tweetapp_hide_repost_enabled',
+      enabledDefault: false,
+    },
+    hideGames: {
+      enabledKey: 'tweetapp_hide_games_enabled',
+      enabledDefault: false,
+      selector: 'section[data-testid="todays-games-card"], section[aria-labelledby="feed-games-title"], button[data-testid="games-rollup-row"]',
+    },
+    gif: {
+      enabledKey: 'tweetapp_gif_enabled',
       enabledDefault: false,
     },
     notificationToast: {
@@ -150,16 +176,12 @@
       composeSelector: 'textarea[placeholder*="happening" i], [contenteditable="true"][aria-label*="happening" i], [contenteditable="true"][aria-placeholder*="happening" i]',
     },
   };
-
   // ============================================================
   // Settings
-
-  // root自身がセレクタに一致する場合も含めて要素を収集する
   function collectMatching(root, selector) {
     const matches = root instanceof Element && root.matches?.(selector) ? [root] : [];
     return matches.concat(Array.from(root.querySelectorAll?.(selector) || []));
   }
-
   function createSetting(key, defaultValue, onChange) {
     return {
       get: () => GM_getValue(key, defaultValue),
@@ -169,9 +191,7 @@
       },
     };
   }
-
   let styleEl = null;
-
   const fontSizeSetting = createSetting(CONFIG.font.key, CONFIG.font.default, () => applyStyles());
   const mediaPctSetting = createSetting(CONFIG.media.key, CONFIG.media.default, () => applyStyles());
   const composerVisibleSetting = createSetting(CONFIG.composer.visibleKey, CONFIG.composer.visibleDefault, () => applyStyles());
@@ -182,33 +202,25 @@
   const autoplayEnabledSetting = createSetting(CONFIG.autoplay.enabledKey, CONFIG.autoplay.enabledDefault, () => applyAutoplaySetting(document, true));
   const translateLangSetting = createSetting(CONFIG.translate.key, CONFIG.translate.default, () => refreshAllTranslateBtnLabels());
   const replyPrefillEnabledSetting = createSetting(CONFIG.replyPrefill.enabledKey, CONFIG.replyPrefill.enabledDefault, () => {});
-  // Swipe gallery: tweet.appの仕様変更で不要になったため無効化(コードと設定項目は残す)。
-  const GALLERY_DISABLED = true;
-  const galleryEnabledSetting = GALLERY_DISABLED
-    ? { get: () => false, set: () => {} }
-    : createSetting(CONFIG.gallery.enabledKey, CONFIG.gallery.enabledDefault, () => {});
+  const gifEnabledSetting = createSetting(CONFIG.gif.enabledKey, CONFIG.gif.enabledDefault, () => refreshAllGifButtons());
   const autogrowEnabledSetting = createSetting(CONFIG.autogrow.enabledKey, CONFIG.autogrow.enabledDefault, () => {});
   const timeFormatSetting = createSetting(CONFIG.timeFormat.key, CONFIG.timeFormat.default, () => {});
   const timeEnabledSetting = createSetting(CONFIG.timeDisplay.enabledKey, CONFIG.timeDisplay.enabledDefault, () => {});
   const composeTabSetting = createSetting(CONFIG.composeTab.enabledKey, CONFIG.composeTab.enabledDefault, () => {});
   const avatarShapeSetting = createSetting(CONFIG.avatarShape.key, CONFIG.avatarShape.default, () => {});
   const hideRepostEnabledSetting = createSetting(CONFIG.hideRepost.enabledKey, CONFIG.hideRepost.enabledDefault, () => applyHideRepostFilter());
+  const hideGamesEnabledSetting = createSetting(CONFIG.hideGames.enabledKey, CONFIG.hideGames.enabledDefault, () => applyStyles());
   const notificationToastEnabledSetting = createSetting(CONFIG.notificationToast.enabledKey, CONFIG.notificationToast.enabledDefault, () => {});
   const notificationSoundSetting = createSetting(CONFIG.notificationToast.soundKey, CONFIG.notificationToast.soundDefault, () => {});
-
   // ============================================================
   // 動画・GIF自動再生制御
-
   const userTouchedVideos = new WeakSet();
-
   function isTrackedVideo(node) {
     return node instanceof HTMLVideoElement && !!node.closest('article');
   }
-
   function markVideoAsUserTouched(event) {
     userTouchedVideos.add(event.currentTarget);
   }
-
   function bindVideoGestureListeners(video) {
     if (video.dataset.ttGestureBound) return;
     video.dataset.ttGestureBound = '1';
@@ -216,16 +228,14 @@
       video.addEventListener(type, markVideoAsUserTouched, true);
     });
   }
-
   function stopVideo(video, force = false) {
     if (!(video instanceof HTMLVideoElement)) return;
     bindVideoGestureListeners(video);
-    if (!force && userTouchedVideos.has(video)) return; // ユーザー管理下の動画には触れない
+    if (!force && userTouchedVideos.has(video)) return;
     video.autoplay = false;
     video.removeAttribute('autoplay');
     video.pause();
   }
-
   function startVideo(video) {
     if (!(video instanceof HTMLVideoElement)) return;
     bindVideoGestureListeners(video);
@@ -234,24 +244,14 @@
     video.muted = true;
     if (video.paused) video.play().catch(() => {});
   }
-
-  function applyAutoplayToVideo(video, force = false) {
-    if (!isTrackedVideo(video)) return;
-    if (autoplayEnabledSetting.get()) startVideo(video);
-    else stopVideo(video, force);
-  }
-
   function applyAutoplaySetting(root = document, force = false) {
     const enabled = autoplayEnabledSetting.get();
     const videos = collectMatching(root, 'article video');
-
     videos.forEach((video) => {
       if (enabled) startVideo(video);
       else stopVideo(video, force);
     });
   }
-
-  // 属性ベースの抑止では防げない、JS経由の自動再生に対応
   document.addEventListener(
     'play',
     (event) => {
@@ -259,18 +259,606 @@
       if (!isTrackedVideo(video)) return;
       if (autoplayEnabledSetting.get()) return;
       if (userTouchedVideos.has(video)) return;
-
       video.pause();
       video.autoplay = false;
       video.removeAttribute('autoplay');
     },
     true
   );
-
-
   // ============================================================
-  // CSS定義（動的な値を含むスタイルは applyStyles 側で生成）
-
+  // Tweet.app の赤エラーメッセージ要素を削除する処理
+  function clearTweetAppErrorMessages(container) {
+    const scope = container || document;
+    const errorElements = Array.from(scope.querySelectorAll('div, p, span')).filter((el) => {
+      return el.children.length === 0 && el.textContent.includes('GIFs cannot be combined');
+    });
+    errorElements.forEach((el) => {
+      const target = el.closest('div.text-red-500, div[class*="red"], p[class*="red"]') || el;
+      target.remove();
+    });
+  }
+  // ============================================================
+  // GIF 検索＆添付機能 (Tenor)
+  //
+  // Tenor:
+  //   Tenor APIは終了しているため、tenor.comの検索ページに
+  //   埋め込まれている store-cache を読み取る。
+  //
+  // 添付:
+  //   検索結果のURLを投稿本文へ入れず、実GIFをBlob/Fileへ変換し、
+  //   Tweet.app自身のファイル入力へ設定する。
+  //
+  // ============================================================
+  const TENOR_BASE_URL = 'https://tenor.com';
+  const TENOR_SEARCH_CACHE = new Map();
+  const TENOR_SEARCH_CACHE_TTL = 5 * 60 * 1000;
+  function gmRequest(options) {
+    return new Promise((resolve, reject) => {
+      GM_xmlhttpRequest({
+        ...options,
+        onload: resolve,
+        onerror: reject,
+        ontimeout: () => reject(new Error('Request timeout')),
+        onabort: () => reject(new Error('Request aborted')),
+      });
+    });
+  }
+  function normalizeTenorGifUrl(url) {
+    if (!url) return '';
+    let value = String(url).trim();
+    if (/^https?:\/\/media\d*\.tenor\.com\//i.test(value)) {
+      value = value.replace(
+        /^https:\/\/media\d*\.tenor\.com\/m\//i,
+        'https://media.tenor.com/'
+      );
+      value = value.replace(
+        /^https:\/\/media\d*\.tenor\.com\/images\//i,
+        'https://media.tenor.com/images/'
+      );
+      value = value.replace(
+        /^https:\/\/media\d*\.tenor\.com\//i,
+        'https://media.tenor.com/'
+      );
+    }
+    return value;
+  }
+  function extractTenorMediaUrl(mediaFormats) {
+    if (!mediaFormats || typeof mediaFormats !== 'object') return '';
+    const candidates = [
+      mediaFormats.gif,
+      mediaFormats.mediumgif,
+      mediaFormats.largegif,
+      mediaFormats.tinygif,
+      mediaFormats.nanogif,
+      mediaFormats.gifpreview,
+    ];
+    for (const item of candidates) {
+      if (typeof item === 'string') {
+        const url = normalizeTenorGifUrl(item);
+        if (/\.gif(?:[?#]|$)/i.test(url)) return url;
+      }
+      if (item && typeof item.url === 'string') {
+        const url = normalizeTenorGifUrl(item.url);
+        if (/\.gif(?:[?#]|$)/i.test(url)) return url;
+      }
+    }
+    return '';
+  }
+  function convertTenorResult(item, index) {
+    if (!item || typeof item !== 'object') return null;
+    const mediaFormats =
+      item.media_formats ||
+      item.mediaFormats ||
+      item.media ||
+      {};
+    const fullUrl =
+      extractTenorMediaUrl(mediaFormats) ||
+      normalizeTenorGifUrl(
+        item.url ||
+        item.gif_url ||
+        item.gifUrl ||
+        item.image_url ||
+        item.imageUrl ||
+        ''
+      );
+    if (!fullUrl) return null;
+    const previewUrl =
+      normalizeTenorGifUrl(
+        mediaFormats.tinygif?.url ||
+        mediaFormats.mediumgif?.url ||
+        mediaFormats.gifpreview?.url ||
+        mediaFormats.webp?.url ||
+        mediaFormats.tinywebp?.url ||
+        item.preview_url ||
+        item.previewUrl ||
+        fullUrl
+      );
+    const id =
+      item.id != null
+        ? String(item.id)
+        : `tenor_${Date.now()}_${index}`;
+    const title =
+      item.content_description ||
+      item.h1_title ||
+      item.title ||
+      item.name ||
+      'Tenor GIF';
+    return {
+      id,
+      provider: 'Tenor',
+      title: String(title).slice(0, 200),
+      previewUrl: previewUrl || fullUrl,
+      fullUrl,
+      sourceUrl: item.itemurl || item.url || '',
+    };
+  }
+  function parseTenorStoreCache(html) {
+    const match = html.match(
+      /<script[^>]+id=["']store-cache["'][^>]*>([\s\S]*?)<\/script>/i
+    );
+    if (!match) {
+      throw new Error('Tenor search data was not found');
+    }
+    let raw = match[1].trim();
+    raw = raw
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&amp;/g, '&');
+    return JSON.parse(raw);
+  }
+  function getTenorSearchResults(store) {
+    const searchStore = store?.universal?.search;
+    if (!searchStore || typeof searchStore !== 'object') {
+      return [];
+    }
+    const entries = Object.values(searchStore);
+    for (const entry of entries) {
+      if (Array.isArray(entry?.results)) {
+        return entry.results;
+      }
+    }
+    return [];
+  }
+  function buildTenorSearchUrl(query) {
+    const q = String(query || '').trim();
+    if (!q) {
+      return `${TENOR_BASE_URL}/search/search-gifs`;
+    }
+    const slug = q
+      .toLowerCase()
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((part) => encodeURIComponent(part))
+      .join('-');
+    return `${TENOR_BASE_URL}/search/${slug}-gifs`;
+  }
+  function fetchTenorGifs(query, cb) {
+    const q = String(query || '').trim();
+    const cacheKey = q.toLowerCase();
+    const cached = TENOR_SEARCH_CACHE.get(cacheKey);
+    if (cached && Date.now() - cached.ts < TENOR_SEARCH_CACHE_TTL) {
+      cb(null, cached.gifs);
+      return;
+    }
+    const url = buildTenorSearchUrl(q);
+    gmRequest({
+      method: 'GET',
+      url,
+      timeout: 15000,
+    })
+      .then((res) => {
+        if (res.status < 200 || res.status >= 300) {
+          throw new Error(`Tenor HTTP ${res.status}`);
+        }
+        const store = parseTenorStoreCache(res.responseText);
+        const rawResults = getTenorSearchResults(store);
+        const gifs = rawResults
+          .map(convertTenorResult)
+          .filter(Boolean)
+          .filter((item) => item.fullUrl);
+        TENOR_SEARCH_CACHE.set(cacheKey, {
+          ts: Date.now(),
+          gifs,
+        });
+        cb(null, gifs);
+      })
+      .catch((err) => {
+        console.error('[Tweet.app Enhancer] Tenor search failed:', err);
+        cb(err, []);
+      });
+  }
+  function findComposerFileInputs(composeEl) {
+    const candidates = [];
+    const scopes = [];
+    let current = composeEl;
+    while (current && current !== document.body) {
+      if (current.matches?.('form, [role="dialog"], .fixed, main')) {
+        scopes.push(current);
+      }
+      current = current.parentElement;
+    }
+    scopes.push(document);
+    const seen = new Set();
+    for (const scope of scopes) {
+      const inputs = Array.from(
+        scope.querySelectorAll?.('input[type="file"]') || []
+      );
+      for (const input of inputs) {
+        if (seen.has(input)) continue;
+        seen.add(input);
+        if (input.disabled) continue;
+        if (input.closest('article')) continue;
+        const rect = input.getBoundingClientRect();
+        const style = getComputedStyle(input);
+        const visible =
+          style.display !== 'none' &&
+          style.visibility !== 'hidden' &&
+          rect.width >= 0 &&
+          rect.height >= 0;
+        const accept = String(input.getAttribute('accept') || '').toLowerCase();
+        const supportsImage =
+          !accept ||
+          accept.includes('image/*') ||
+          accept.includes('image/gif') ||
+          accept.includes('.gif');
+        if (!supportsImage) continue;
+        candidates.push({
+          input,
+          score:
+            (input.closest('form') ? 30 : 0) +
+            (input.closest('[role="dialog"]') ? 20 : 0) +
+            (input.closest('.fixed') ? 10 : 0) +
+            (visible ? 10 : 0),
+        });
+      }
+    }
+    candidates.sort((a, b) => b.score - a.score);
+    return candidates.map((item) => item.input);
+  }
+  function getComposerFileInput(composeEl) {
+    const inputs = findComposerFileInputs(composeEl);
+    if (!inputs.length) return null;
+    return inputs[0];
+  }
+  function createGifFile(blob, provider) {
+    let type = blob.type || 'image/gif';
+    if (!/^image\/gif$/i.test(type)) {
+      type = 'image/gif';
+    }
+    return new File(
+      [blob],
+      `${provider.toLowerCase()}_${Date.now()}.gif`,
+      {
+        type,
+        lastModified: Date.now(),
+      }
+    );
+  }
+  function fetchGifBlob(url, retryUrl = '') {
+    return gmRequest({
+      method: 'GET',
+      url,
+      responseType: 'blob',
+      timeout: 30000,
+    }).then((res) => {
+      if (res.status < 200 || res.status >= 300) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      const blob = res.response;
+      if (!(blob instanceof Blob)) {
+        throw new Error('GIF response was not a Blob');
+      }
+      const contentType = String(
+        res.responseHeaders?.match(/content-type:\s*([^\r\n;]+)/i)?.[1] || ''
+      ).toLowerCase();
+      const blobType = String(blob.type || '').toLowerCase();
+      if (
+        /image\/gif/i.test(blobType) ||
+        /image\/gif/i.test(contentType)
+      ) {
+        return blob;
+      }
+      if (retryUrl && retryUrl !== url) {
+        return fetchGifBlob(retryUrl);
+      }
+      throw new Error('The downloaded file is not a GIF');
+    });
+  }
+  function buildTenorRetryUrl(url) {
+    if (!url) return '';
+    if (/^https:\/\/media\.tenor\.com\//i.test(url)) {
+      return '';
+    }
+    if (/^https:\/\/media\d*\.tenor\.com\/m\//i.test(url)) {
+      return url.replace(
+        /^https:\/\/media\d*\.tenor\.com\/m\//i,
+        'https://media.tenor.com/'
+      );
+    }
+    if (/^https:\/\/media\d*\.tenor\.com\//i.test(url)) {
+      return url.replace(
+        /^https:\/\/media\d*\.tenor\.com\//i,
+        'https://media.tenor.com/'
+      );
+    }
+    return '';
+  }
+  function setFileInputFile(input, file) {
+    if (!input) {
+      throw new Error('Tweet.app file input was not found');
+    }
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    const descriptor = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      'files'
+    );
+    if (descriptor?.set) {
+      descriptor.set.call(input, dt.files);
+    } else {
+      input.files = dt.files;
+    }
+    input.dispatchEvent(new Event('input', {
+      bubbles: true,
+      composed: true,
+    }));
+    input.dispatchEvent(new Event('change', {
+      bubbles: true,
+      composed: true,
+    }));
+  }
+  function attachGifToComposer(composeEl, gifItem) {
+    if (!gifItem?.fullUrl) {
+      alert('GIF URL is unavailable');
+      return;
+    }
+    const input = getComposerFileInput(composeEl);
+    if (!input) {
+      alert('Could not find the GIF upload field in Tweet.app');
+      return;
+    }
+    // ポップアップのみ表示し、通知音は鳴らさない
+    showToastMessage('Downloading Tenor GIF...', false);
+    const normalizedUrl = normalizeTenorGifUrl(gifItem.fullUrl);
+    const retryUrl = buildTenorRetryUrl(gifItem.fullUrl);
+    clearTweetAppErrorMessages(
+      composeEl.closest('form, [role="dialog"], .fixed') || document
+    );
+    fetchGifBlob(normalizedUrl, retryUrl)
+      .then((blob) => {
+        const file = createGifFile(blob, 'Tenor');
+        /*
+         * 重要:
+         * 以前は document 内の全 input[type=file] に同じファイルを
+         * 設定していた。
+         *
+         * Tweet.appでは複数のファイル入力が存在するため、これを行うと
+         * GIFが複数回処理され、「GIFs cannot be combined」になることがある。
+         *
+         * 現在は対象の投稿欄に属する入力だけを1個処理する。
+         */
+        setFileInputFile(input, file);
+        const container =
+          composeEl.closest('form, [role="dialog"], .fixed') || document;
+        setTimeout(() => clearTweetAppErrorMessages(container), 100);
+        setTimeout(() => clearTweetAppErrorMessages(container), 500);
+        setTimeout(() => clearTweetAppErrorMessages(container), 1000);
+      })
+      .catch((err) => {
+        console.error('[Tweet.app Enhancer] GIF attachment failed:', err);
+        alert(`Failed to attach GIF.\n\n${err?.message || 'Unknown error'}`);
+      });
+  }
+  function updateGifBtnVisibility(btn) {
+    btn.style.display = gifEnabledSetting.get() ? '' : 'none';
+  }
+  function refreshAllGifButtons() {
+    document.querySelectorAll('.tt-gif-btn').forEach(updateGifBtnVisibility);
+  }
+  function openGifPicker(composeEl) {
+    if (document.getElementById('tt-gif-modal')) return;
+    const modal = document.createElement('div');
+    modal.id = 'tt-gif-modal';
+    modal.style.cssText = `
+      position: fixed;
+      inset: 0;
+      z-index: 100000;
+      background: rgba(0,0,0,0.65);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      box-sizing: border-box;
+    `;
+    const card = document.createElement('div');
+    card.style.cssText = `
+      width: 100%;
+      max-width: 500px;
+      height: min(620px, calc(100vh - 32px));
+      background: var(--color-tl-app-bg, #15202b);
+      border-radius: 16px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+    `;
+    const header = document.createElement('div');
+    header.style.cssText = `
+      padding: 12px 16px;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      border-bottom: 1px solid var(--color-tl-app-border, #38444d);
+    `;
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.placeholder = 'Search Tenor GIFs...';
+    input.style.cssText = `
+      flex: 1;
+      min-width: 0;
+      padding: 8px 14px;
+      border-radius: 9999px;
+      border: 1px solid var(--color-tl-app-border, #38444d);
+      font-size: 14px;
+      outline: none;
+      background: transparent;
+      color: inherit;
+    `;
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.textContent = '✕';
+    closeBtn.style.cssText = `
+      background: none;
+      border: none;
+      font-size: 18px;
+      cursor: pointer;
+      padding: 4px 8px;
+      color: inherit;
+    `;
+    closeBtn.onclick = () => modal.remove();
+    header.appendChild(input);
+    header.appendChild(closeBtn);
+    const grid = document.createElement('div');
+    grid.style.cssText = `
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px;
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 8px;
+      align-content: start;
+    `;
+    const footer = document.createElement('div');
+    footer.style.cssText = `
+      padding: 7px 12px;
+      border-top: 1px solid var(--color-tl-app-border, #38444d);
+      color: #8899a6;
+      font-size: 10px;
+      text-align: center;
+    `;
+    footer.textContent =
+      'Powered by Tenor · GIFs are downloaded and attached as media files.';
+    card.appendChild(header);
+    card.appendChild(grid);
+    card.appendChild(footer);
+    modal.appendChild(card);
+    document.body.appendChild(modal);
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) modal.remove();
+    });
+    let debounceTimer = null;
+    let requestSerial = 0;
+    function renderLoading() {
+      grid.innerHTML = `
+        <div style="
+          grid-column:span 2;
+          text-align:center;
+          padding:32px;
+          color:#8899a6;
+        ">
+          Loading GIFs...
+        </div>
+      `;
+    }
+    function renderEmpty() {
+      grid.innerHTML = `
+        <div style="
+          grid-column:span 2;
+          text-align:center;
+          padding:24px;
+          color:#8899a6;
+        ">
+          No GIFs found
+        </div>
+      `;
+    }
+    function renderError(err) {
+      grid.innerHTML = `
+        <div style="
+          grid-column:span 2;
+          text-align:center;
+          padding:24px;
+          color:#e0245e;
+          line-height:1.5;
+          white-space:pre-line;
+        ">
+          GIF search failed.<br>
+          <small>${escapeHtml(String(err?.message || err || 'Unknown error'))}</small>
+        </div>
+      `;
+    }
+    function loadGifs(query = '') {
+      const serial = ++requestSerial;
+      renderLoading();
+      fetchTenorGifs(query, (err, gifs) => {
+        if (serial !== requestSerial) return;
+        grid.innerHTML = '';
+        if (err) {
+          renderError(err);
+          return;
+        }
+        if (!gifs || gifs.length === 0) {
+          renderEmpty();
+          return;
+        }
+        gifs.forEach((item) => {
+          const cell = document.createElement('div');
+          cell.style.cssText = 'min-width: 0;';
+          const img = document.createElement('img');
+          img.src = item.previewUrl;
+          img.loading = 'lazy';
+          img.alt = item.title || 'Tenor GIF';
+          img.style.cssText = `
+            width: 100%;
+            height: 130px;
+            object-fit: cover;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: transform 0.1s, opacity 0.1s;
+            background: rgba(128,128,128,0.1);
+          `;
+          img.addEventListener('mouseenter', () => {
+            img.style.transform = 'scale(1.03)';
+          });
+          img.addEventListener('mouseleave', () => {
+            img.style.transform = 'scale(1)';
+          });
+          img.addEventListener('error', () => {
+            img.style.opacity = '0.3';
+          });
+          img.addEventListener('click', () => {
+            modal.remove();
+            attachGifToComposer(composeEl, item);
+          });
+          cell.appendChild(img);
+          grid.appendChild(cell);
+        });
+      });
+    }
+    input.addEventListener('input', () => {
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        loadGifs(input.value);
+      }, 350);
+    });
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        modal.remove();
+        return;
+      }
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        clearTimeout(debounceTimer);
+        loadGifs(input.value);
+      }
+    });
+    loadGifs();
+    setTimeout(() => {
+      input.focus();
+    }, 50);
+  }
+  // ============================================================
+  // CSS定義
   const SETTINGS_PANEL_CSS = `
     .tt-toggle-switch {
       width: 44px;
@@ -323,7 +911,6 @@
       text-overflow: ellipsis;
     }
   `;
-
   const NOTIFICATION_TOAST_CSS = `
     .tt-notification-toast {
       position: fixed;
@@ -349,7 +936,6 @@
       transform: translateX(-50%) translateY(0);
     }
   `;
-
   const TRANSLATE_BTN_CSS = `
     .tt-compose-btn {
       display: inline-flex;
@@ -363,7 +949,26 @@
       width: fit-content;
       padding: 4px 0;
     }
-    .tt-compose-btn:hover { color: #1da1f2; }
+    .tt-compose-btn:hover {
+      color: #1da1f2;
+    }
+    .tt-gif-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      cursor: pointer;
+      color: #1da1f2;
+      font-size: 12px;
+      font-weight: bold;
+      border: 1px solid #1da1f2;
+      border-radius: 4px;
+      padding: 1px 5px;
+      margin-right: 8px;
+      user-select: none;
+    }
+    .tt-gif-btn:hover {
+      background: rgba(29, 161, 242, 0.1);
+    }
     .tt-compose-result {
       margin-top: 8px;
       padding: 8px 10px;
@@ -375,113 +980,25 @@
       cursor: pointer;
     }
   `;
-
-  const GALLERY_CSS = `
-    #tweetapp-gallery-overlay {
-      position: fixed;
-      inset: 0;
-      background: rgba(0,0,0,0.92);
-      z-index: 10001;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      overflow: hidden;
-      touch-action: none;
-    }
-    #tweetapp-gallery-track {
-      display: flex;
-      width: 100%;
-      height: 100%;
-      transition: transform 0.25s ease-out;
-    }
-    #tweetapp-gallery-track.tweetapp-gallery-no-transition {
-      transition: none;
-    }
-    .tweetapp-gallery-slide {
-      flex: 0 0 100%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      height: 100%;
-    }
-    .tweetapp-gallery-slide img {
-      max-width: 100%;
-      max-height: 100%;
-      object-fit: contain;
-    }
-    #tweetapp-gallery-close {
-      position: absolute;
-      top: 16px;
-      left: 16px;
-      width: 40px;
-      height: 40px;
-      border-radius: 50%;
-      background: rgba(0,0,0,0.5);
-      color: #fff;
-      border: none;
-      font-size: 20px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      z-index: 10002;
-    }
-    #tweetapp-gallery-counter {
-      position: absolute;
-      top: 24px;
-      left: 50%;
-      transform: translateX(-50%);
-      color: #fff;
-      font-size: 14px;
-      background: rgba(0,0,0,0.5);
-      padding: 4px 12px;
-      border-radius: 12px;
-      z-index: 10002;
-    }
-    .tweetapp-gallery-arrow {
-      position: absolute;
-      top: 50%;
-      transform: translateY(-50%);
-      width: 44px;
-      height: 44px;
-      border-radius: 50%;
-      background: rgba(0,0,0,0.5);
-      color: #fff;
-      border: none;
-      font-size: 22px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      z-index: 10002;
-    }
-    #tweetapp-gallery-prev { left: 12px; }
-    #tweetapp-gallery-next { right: 12px; }
-  `;
-
   // ============================================================
   // スタイル適用
-
   function applyStyles() {
     if (!styleEl) {
       styleEl = document.createElement('style');
       styleEl.id = 'tweetapp-appearance-style';
-      if (document.documentElement) document.documentElement.appendChild(styleEl);
+      if (document.documentElement) {
+        document.documentElement.appendChild(styleEl);
+      }
     }
-
     const scale = fontSizeSetting.get();
     const mediaPct = mediaPctSetting.get();
     const composerVisible = composerVisibleSetting.get();
+    const hideGames = hideGamesEnabledSetting.get();
     const onSettingsPage = location.pathname.startsWith('/settings');
-
     styleEl.textContent = `
-      /* ツイート表示全体(アバター・余白・アイコン含む)の拡大縮小。
-         フォントだけでなくレイアウト全体をスケールするためzoomを使う
-         (transform: scaleだとクリック領域や折り返しがズレるため不採用) */
       article {
         zoom: ${scale};
       }
-
-      /* 画像・動画・リンクカードの表示幅(記事内・News/Sportsタブのリンクカードに適用)。
-         /settings ページはカードUIが同じクラスを使い回しているため対象外にする */
       ${onSettingsPage ? '' : `
       div.rounded-2xl.overflow-hidden,
       div.${CONFIG.linkCard.className} {
@@ -489,78 +1006,79 @@
         margin-left: auto !important;
         margin-right: auto !important;
       }
-      /* 仕様変更後の単一画像はラッパー無しでimgが直接置かれるためimg自体に適用 */
       article img[alt="Attached media"]:not(div.rounded-2xl.overflow-hidden img) {
         display: block !important;
         width: ${mediaPct}% !important;
         margin-left: auto !important;
         margin-right: auto !important;
       }`}
-
-      /* 常時表示の投稿欄（フィード最上部のみ） */
-      ${composerVisible ? '' : `
-      ${CONFIG.composer.containerSelector} {
+      ${composerVisible ? '' : `${CONFIG.composer.containerSelector} {
         display: none !important;
       }`}
-
+      ${hideGames ? `${CONFIG.hideGames.selector} {
+        display: none !important;
+      }` : ''}
       ${TRANSLATE_BTN_CSS}
-      ${GALLERY_CSS}
       ${SETTINGS_PANEL_CSS}
       ${NOTIFICATION_TOAST_CSS}
     `;
-
     applyFontSizeToComposers();
   }
-
   function setFontStyle(el, fontSizePx) {
     el.style.setProperty('font-size', `${fontSizePx}px`, 'important');
     el.style.setProperty('line-height', '1.5', 'important');
   }
-
-  // 投稿欄はarticleのzoom対象外(入力中の見た目が変わると使いづらいため)。
   function applyFontSizeToComposers(root = document) {
-    const scaledPx = Math.round(CONFIG.font.composerBasePx * fontSizeSetting.get());
-    root.querySelectorAll?.(CONFIG.composer.textareaSelector).forEach((textarea) => {
-      // 設定画面のテキストエリアは対象外(倍率を掛けない)
+    const scaledPx = Math.round(
+      CONFIG.font.composerBasePx * fontSizeSetting.get()
+    );
+    root.querySelectorAll?.(
+      CONFIG.composer.textareaSelector
+    ).forEach((textarea) => {
       if (textarea.closest('#tweetapp-enhancements-overlay')) return;
-      // article内の欄はarticleのzoomで拡大されるため、基準pxのまま(倍率を掛けると二重拡大になる)
-      const fontSizePx = textarea.closest('article') ? CONFIG.font.composerBasePx : scaledPx;
+      const fontSizePx = textarea.closest('article')
+        ? CONFIG.font.composerBasePx
+        : scaledPx;
       setFontStyle(textarea, fontSizePx);
-      textarea.parentElement?.querySelectorAll('*').forEach((el) => setFontStyle(el, fontSizePx));
+      textarea.parentElement?.querySelectorAll('*').forEach((el) => {
+        setFontStyle(el, fontSizePx);
+      });
     });
   }
-
   function clearOgpCache() {
     GM_setValue(CONFIG.linkCard.cacheKey, {});
     ogpCache.clear();
+    ogpFail.clear();
     alert('Link card cache cleared');
   }
-
   // ============================================================
   // /settings ページへの設定パネル埋め込み
-
-
-  function createSliderControl({ min, max, step, getValue, setValue, format }) {
+  function createSliderControl({
+    min,
+    max,
+    step,
+    getValue,
+    setValue,
+    format,
+  }) {
     const wrap = document.createElement('div');
-    wrap.style.cssText = 'display:flex;align-items:center;gap:10px;width:100%;';
+    wrap.style.cssText =
+      'display:flex;align-items:center;gap:10px;width:100%;';
     wrap.dataset.wide = '1';
-
     const input = document.createElement('input');
     input.type = 'range';
     input.min = String(min);
     input.max = String(max);
     input.step = String(step);
     input.style.cssText = 'flex:1;cursor:pointer;';
-
     const label = document.createElement('span');
-    label.style.cssText = 'min-width:48px;text-align:right;font-size:13px;font-variant-numeric:tabular-nums;';
-
+    label.style.cssText =
+      'min-width:48px;text-align:right;font-size:13px;font-variant-numeric:tabular-nums;';
     function render() {
       const v = getValue();
       input.value = String(v);
       label.textContent = format(v);
     }
-
     input.addEventListener('input', () => {
       label.textContent = format(parseInt(input.value, 10));
     });
@@ -568,30 +1086,28 @@
       setValue(parseInt(input.value, 10));
       render();
     });
-
     wrap.appendChild(input);
     wrap.appendChild(label);
     render();
-    return { el: wrap, render };
+    return {
+      el: wrap,
+      render,
+    };
   }
-
   function createSettingsRow(title, description, controlEl) {
-    // 幅を使う大きな要素(スライダー・テキストエリア)は、タイトルの下に縦積みで配置する
     const wide = controlEl.dataset.wide === '1';
-
     const row = document.createElement('div');
     row.className = wide
       ? 'flex flex-col gap-3 px-4 py-3.5'
       : 'flex items-center justify-between gap-3 px-4 py-3.5';
-
     const textWrap = document.createElement('div');
-    textWrap.className = wide ? 'flex flex-col min-w-0' : 'flex flex-col min-w-0 flex-1';
-
+    textWrap.className = wide
+      ? 'flex flex-col min-w-0'
+      : 'flex flex-col min-w-0 flex-1';
     const titleEl = document.createElement('span');
     titleEl.className = 'text-[13px] font-bold text-tl-app-text';
     titleEl.textContent = title;
     textWrap.appendChild(titleEl);
-
     if (description) {
       const descEl = document.createElement('span');
       descEl.className = wide
@@ -600,67 +1116,60 @@
       descEl.textContent = description;
       textWrap.appendChild(descEl);
     }
-
-    if (wide) controlEl.style.width = '100%';
-
+    if (wide) {
+      controlEl.style.width = '100%';
+    }
     row.appendChild(textWrap);
     row.appendChild(controlEl);
     return row;
   }
-
   function createToggleControl(setting, labelOn, labelOff) {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'tt-toggle-switch';
     btn.setAttribute('role', 'switch');
-
     const thumb = document.createElement('span');
     thumb.className = 'tt-toggle-thumb';
     btn.appendChild(thumb);
-
     function render() {
       const checked = setting.get();
       btn.setAttribute('aria-checked', String(checked));
       btn.setAttribute('aria-label', checked ? labelOn : labelOff);
     }
     render();
-
     btn.addEventListener('click', () => {
       setting.set(!setting.get());
       render();
     });
-
-    return { el: btn, render };
+    return {
+      el: btn,
+      render,
+    };
   }
-
-  // options: [{value, label}, ...]
   function createSelectControl(options, getValue, setValue) {
     const select = document.createElement('select');
     select.className = 'tt-settings-value-btn';
-
     options.forEach(({ value, label }) => {
       const opt = document.createElement('option');
       opt.value = value;
       opt.textContent = label;
       select.appendChild(opt);
     });
-
     function render() {
       select.value = getValue();
     }
     render();
-
     select.addEventListener('change', () => {
       setValue(select.value);
       render();
     });
-
-    return { el: select, render };
+    return {
+      el: select,
+      render,
+    };
   }
-
-  // tweet.app 既存ボタン(Changeボタン等)と同じ見た目のクラス
-  const SITE_BTN_CLASS = 'px-3.5 py-2 rounded-full text-xs font-bold border border-tl-app-border text-tl-app-text hover:bg-tl-app-surface transition-all cursor-pointer';
-
+  const SITE_BTN_CLASS =
+    'px-3.5 py-2 rounded-full text-xs font-bold border border-tl-app-border text-tl-app-text hover:bg-tl-app-surface transition-all cursor-pointer';
   function applyCustomCss() {
     let styleTag = document.getElementById('tweetapp-custom-css');
     if (!styleTag) {
@@ -670,8 +1179,6 @@
     }
     styleTag.textContent = GM_getValue(CONFIG.customCss.key, '');
   }
-
-  // アバターの形: 丸(既定) / 角丸四角形 / 四角形
   const AVATAR_SHAPE_CSS = {
     circle: '',
     rounded:
@@ -681,7 +1188,6 @@
       'img[alt$="avatar"], div.relative.inline-flex.shrink-0.isolate > button img[alt$="avatar"], div.relative.inline-flex.shrink-0.isolate > img[alt$="avatar"], div[role="form"] img[alt$="avatar"], button[aria-label="Open profile menu"] img[alt$="avatar"] { border-radius: 0 !important; }' +
       'div.relative.inline-flex.shrink-0.isolate > button, button[aria-label="Open profile menu"] { border-radius: 0 !important; }',
   };
-
   function applyAvatarShape() {
     let styleTag = document.getElementById('tweetapp-avatar-shape');
     if (!styleTag) {
@@ -691,41 +1197,55 @@
     }
     styleTag.textContent = AVATAR_SHAPE_CSS[avatarShapeSetting.get()] || '';
   }
-
-  // 設定項目の並び(実験的機能は末尾にまとめる)。ここに無い項目(Swipe gallery)は表示しない
   const SETTINGS_ORDER = [
-    'Article & Compose zoom', 'Avatar shape', 'Content width', 'Time stamp', 'Time stamp format',
-    'Hide reposts', 'Video/GIF autoplay', 'Link card previews', 'Link card cache',
-    'Always-visible composer', 'Auto-grow textarea', 'Reply @handle prefill', 'Translate target language',
-    'Notification popup', 'Notification sound',
+    'Article & Compose zoom',
+    'Avatar shape',
+    'Content width',
+    'Time stamp',
+    'Time stamp format',
+    'Hide reposts',
+    'Hide games',
+    'Video/GIF autoplay',
+    'Link card previews',
+    'Link card cache',
+    'Always-visible composer',
+    'Auto-grow textarea',
+    'Reply @handle prefill',
+    'Translate target language',
+    'Notification popup',
+    'Notification sound',
     '__experimental__',
-    'Compose in new tab', 'Custom CSS',
+    'GIF button',
+    'Compose in new tab',
+    'Custom CSS',
   ];
-
   function arrangeSettingsCard(card) {
     const rowsByTitle = new Map();
     Array.from(card.children).forEach((row) => {
       const title = row.querySelector('span.font-bold');
-      if (title) rowsByTitle.set(title.textContent.trim(), row);
+      if (title) {
+        rowsByTitle.set(title.textContent.trim(), row);
+      }
     });
     card.innerHTML = '';
     SETTINGS_ORDER.forEach((key) => {
       if (key === '__experimental__') {
         const heading = document.createElement('div');
         heading.textContent = 'Experimental';
-        heading.style.cssText = 'padding:12px 16px 4px;font-size:12px;font-weight:700;color:var(--color-tl-app-text-muted);';
+        heading.style.cssText =
+          'padding:12px 16px 4px;font-size:12px;font-weight:700;color:var(--color-tl-app-text-muted);';
         card.appendChild(heading);
         return;
       }
       const row = rowsByTitle.get(key);
-      if (row) card.appendChild(row);
+      if (row) {
+        card.appendChild(row);
+      }
     });
   }
-
   function buildSettingsSection() {
     const section = document.createElement('div');
     section.id = 'tweetapp-enhancements-section';
-
     const titleBlock = document.createElement('div');
     const h4 = document.createElement('h4');
     h4.className = 'text-sm font-extrabold text-tl-app-text';
@@ -735,11 +1255,9 @@
     p.textContent = 'Settings added by the userscript.';
     titleBlock.appendChild(h4);
     titleBlock.appendChild(p);
-
     const card = document.createElement('div');
-    card.className = 'rounded-2xl border border-tl-app-border overflow-hidden divide-y divide-tl-app-border';
-
-    // Article & Compose zoom (5%刻み)
+    card.className =
+      'rounded-2xl border border-tl-app-border overflow-hidden divide-y divide-tl-app-border';
     const fontSizeCtrl = createSliderControl({
       min: 50,
       max: 200,
@@ -748,9 +1266,13 @@
       setValue: (v) => fontSizeSetting.set(v / 100),
       format: (v) => `${v}%`,
     });
-    card.appendChild(createSettingsRow('Article & Compose zoom', 'Zoom level for tweet articles and compose box (5% steps)', fontSizeCtrl.el));
-
-    // Content width (5%刻み)
+    card.appendChild(
+      createSettingsRow(
+        'Article & Compose zoom',
+        'Zoom level for tweet articles and compose box (5% steps)',
+        fontSizeCtrl.el
+      )
+    );
     const mediaWidthCtrl = createSliderControl({
       min: 50,
       max: 100,
@@ -759,93 +1281,192 @@
       setValue: (v) => mediaPctSetting.set(v),
       format: (v) => `${v}%`,
     });
-    card.appendChild(createSettingsRow('Content width', 'Width of media and content area (5% steps)', mediaWidthCtrl.el));
-
-    // Reply @handle prefill
-    const replyPrefillToggle = createToggleControl(replyPrefillEnabledSetting, 'ON', 'OFF');
-    card.appendChild(createSettingsRow('Reply @handle prefill', 'Prefill @handle when replying inline to a tweet', replyPrefillToggle.el));
-
-    // Translate target language
+    card.appendChild(
+      createSettingsRow(
+        'Content width',
+        'Width of media and content area (5% steps)',
+        mediaWidthCtrl.el
+      )
+    );
+    const replyPrefillToggle = createToggleControl(
+      replyPrefillEnabledSetting,
+      'ON',
+      'OFF'
+    );
+    card.appendChild(
+      createSettingsRow(
+        'Reply @handle prefill',
+        'Prefill @handle when replying inline to a tweet',
+        replyPrefillToggle.el
+      )
+    );
     const translateCtrl = createSelectControl(
-      CONFIG.translate.langs.map(([code, label]) => ({ value: code, label })),
+      CONFIG.translate.langs.map(([code, label]) => ({
+        value: code,
+        label,
+      })),
       () => translateLangSetting.get(),
       (v) => translateLangSetting.set(v)
     );
-    card.appendChild(createSettingsRow('Translate target language', 'Language used when translating your draft before posting', translateCtrl.el));
-
-    // Composer visibility
-    const composerToggle = createToggleControl(composerVisibleSetting, 'Shown', 'Hidden');
-    card.appendChild(createSettingsRow('Always-visible composer', 'Show the tweet box at the top of the feed', composerToggle.el));
-
-    // Swipe gallery
-    const galleryToggle = createToggleControl(galleryEnabledSetting, 'ON', 'OFF');
-    if (GALLERY_DISABLED) {
-      galleryToggle.el.disabled = true;
-      galleryToggle.el.style.opacity = '0.4';
-      galleryToggle.el.style.cursor = 'not-allowed';
-    }
-    card.appendChild(createSettingsRow('Swipe gallery', GALLERY_DISABLED ? 'Disabled (no longer needed after tweet.app update)' : 'Swipe/keyboard navigation for multi-photo tweets', galleryToggle.el));
-
-    // Auto-grow textarea
-    const autogrowToggle = createToggleControl(autogrowEnabledSetting, 'ON', 'OFF');
-    card.appendChild(createSettingsRow('Auto-grow textarea', 'Automatically expand text input area when typing multiple lines', autogrowToggle.el));
-
-    // Hide reposted articles
-    const hideRepostToggle = createToggleControl(hideRepostEnabledSetting, 'ON', 'OFF');
-    card.appendChild(createSettingsRow('Hide reposts', 'Hide articles marked as reposted', hideRepostToggle.el));
-
-    // Autoplay
-    const autoplayToggle = createToggleControl(autoplayEnabledSetting, 'ON', 'OFF');
-    card.appendChild(createSettingsRow('Video/GIF autoplay', 'Automatically play videos and GIFs while scrolling', autoplayToggle.el));
-
-    // Notification toast + sound
-    const notificationToastToggle = createToggleControl(notificationToastEnabledSetting, 'ON', 'OFF');
-    card.appendChild(createSettingsRow('Notification popup', 'Show a popup when your notification count increases', notificationToastToggle.el));
-
+    card.appendChild(
+      createSettingsRow(
+        'Translate target language',
+        'Language used when translating your draft before posting',
+        translateCtrl.el
+      )
+    );
+    const composerToggle = createToggleControl(
+      composerVisibleSetting,
+      'Shown',
+      'Hidden'
+    );
+    card.appendChild(
+      createSettingsRow(
+        'Always-visible composer',
+        'Show the tweet box at the top of the feed',
+        composerToggle.el
+      )
+    );
+    const autogrowToggle = createToggleControl(
+      autogrowEnabledSetting,
+      'ON',
+      'OFF'
+    );
+    card.appendChild(
+      createSettingsRow(
+        'Auto-grow textarea',
+        'Automatically expand text input area when typing multiple lines',
+        autogrowToggle.el
+      )
+    );
+    const hideRepostToggle = createToggleControl(
+      hideRepostEnabledSetting,
+      'ON',
+      'OFF'
+    );
+    card.appendChild(
+      createSettingsRow(
+        'Hide reposts',
+        'Hide articles marked as reposted',
+        hideRepostToggle.el
+      )
+    );
+    const hideGamesToggle = createToggleControl(
+      hideGamesEnabledSetting,
+      'ON',
+      'OFF'
+    );
+    card.appendChild(
+      createSettingsRow(
+        'Hide games',
+        'Hide game cards (e.g. TWIRDLE) in the timeline',
+        hideGamesToggle.el
+      )
+    );
+    const autoplayToggle = createToggleControl(
+      autoplayEnabledSetting,
+      'ON',
+      'OFF'
+    );
+    card.appendChild(
+      createSettingsRow(
+        'Video/GIF autoplay',
+        'Automatically play videos and GIFs while scrolling',
+        autoplayToggle.el
+      )
+    );
+    const notificationToastToggle = createToggleControl(
+      notificationToastEnabledSetting,
+      'ON',
+      'OFF'
+    );
+    card.appendChild(
+      createSettingsRow(
+        'Notification popup',
+        'Show a popup when your notification count increases',
+        notificationToastToggle.el
+      )
+    );
     const notificationSoundCtrl = createSelectControl(
-      CONFIG.notificationToast.sounds.map((s) => ({ value: s, label: s.charAt(0).toUpperCase() + s.slice(1) })),
+      CONFIG.notificationToast.sounds.map((s) => ({
+        value: s,
+        label: s.charAt(0).toUpperCase() + s.slice(1),
+      })),
       () => notificationSoundSetting.get(),
       (v) => {
         notificationSoundSetting.set(v);
-        playNotificationSound(); // 選択時にデモ再生
+        playNotificationSound();
       }
     );
-    
-    // デモボタンを追加
     const demoSoundBtn = document.createElement('button');
     demoSoundBtn.type = 'button';
     demoSoundBtn.className = 'tt-settings-value-btn';
     demoSoundBtn.textContent = 'Play';
     demoSoundBtn.addEventListener('click', playNotificationSound);
-    
     const soundControlWrapper = document.createElement('div');
-    soundControlWrapper.style.cssText = 'display:flex;gap:8px;align-items:center;';
+    soundControlWrapper.style.cssText =
+      'display:flex;gap:8px;align-items:center;';
     soundControlWrapper.appendChild(notificationSoundCtrl.el);
     soundControlWrapper.appendChild(demoSoundBtn);
-    
-    card.appendChild(createSettingsRow('Notification sound', 'Sound to play with the notification popup', soundControlWrapper));
-
-    // Link card
-    const linkCardToggle = createToggleControl(linkCardEnabledSetting, 'ON', 'OFF');
-    card.appendChild(createSettingsRow('Link card previews', 'Show OGP preview cards for links in tweets', linkCardToggle.el));
-
-    // Clear link card cache
+    card.appendChild(
+      createSettingsRow(
+        'Notification sound',
+        'Sound to play with the notification popup',
+        soundControlWrapper
+      )
+    );
+    const linkCardToggle = createToggleControl(
+      linkCardEnabledSetting,
+      'ON',
+      'OFF'
+    );
+    card.appendChild(
+      createSettingsRow(
+        'Link card previews',
+        'Show OGP preview cards for links in tweets',
+        linkCardToggle.el
+      )
+    );
     const clearCacheBtn = document.createElement('button');
     clearCacheBtn.type = 'button';
     clearCacheBtn.className = 'tt-settings-value-btn';
     clearCacheBtn.textContent = 'Clear';
     clearCacheBtn.addEventListener('click', clearOgpCache);
-    card.appendChild(createSettingsRow('Link card cache', 'Clear cached link preview data', clearCacheBtn));
-
-    // Compose in new tab toggle
-    const composeTabToggle = createToggleControl(composeTabSetting, 'ON', 'OFF');
-    card.appendChild(createSettingsRow('Compose in new tab', 'Open the tweet box in a new tab; closes after posting', composeTabToggle.el));
-
-    // Absolute time toggle
+    card.appendChild(
+      createSettingsRow(
+        'Link card cache',
+        'Clear cached link preview data',
+        clearCacheBtn
+      )
+    );
+    const gifToggle = createToggleControl(gifEnabledSetting, 'ON', 'OFF');
+    card.appendChild(
+      createSettingsRow(
+        'GIF button',
+        'Show the Tenor GIF search button in the compose box',
+        gifToggle.el
+      )
+    );
+    const composeTabToggle = createToggleControl(
+      composeTabSetting,
+      'ON',
+      'OFF'
+    );
+    card.appendChild(
+      createSettingsRow(
+        'Compose in new tab',
+        'Open the tweet box in a new tab; closes after posting',
+        composeTabToggle.el
+      )
+    );
     const timeToggle = createToggleControl(timeEnabledSetting, 'ON', 'OFF');
-    card.appendChild(createSettingsRow('Time stamp', 'Show absolute time after relative times', timeToggle.el));
-
-    // Absolute time format
+    card.appendChild(
+      createSettingsRow(
+        'Time stamp',
+        'Show absolute time after relative times',
+        timeToggle.el
+      )
+    );
     const timeInput = document.createElement('input');
     timeInput.type = 'text';
     timeInput.value = timeFormatSetting.get();
@@ -853,7 +1474,6 @@
     timeInput.spellcheck = false;
     timeInput.style.cssText =
       'width:100%;box-sizing:border-box;padding:8px;font-family:monospace;font-size:12px;border-radius:8px;';
-
     const timeApplyBtn = document.createElement('button');
     timeApplyBtn.type = 'button';
     timeApplyBtn.textContent = 'Apply';
@@ -861,19 +1481,24 @@
     timeApplyBtn.style.cssText = 'align-self:flex-end;';
     timeApplyBtn.addEventListener('click', () => {
       timeFormatSetting.set(timeInput.value.trim());
-      document.querySelectorAll('.tt-abs-time').forEach((el) => el.remove());
+      document
+        .querySelectorAll('.tt-abs-time')
+        .forEach((el) => el.remove());
       processAbsoluteTimes();
     });
-
     const timeWrap = document.createElement('div');
-    timeWrap.style.cssText = 'display:flex;flex-direction:column;gap:8px;width:100%;';
+    timeWrap.style.cssText =
+      'display:flex;flex-direction:column;gap:8px;width:100%;';
     timeWrap.dataset.wide = '1';
     timeWrap.appendChild(timeInput);
     timeWrap.appendChild(timeApplyBtn);
-    card.appendChild(createSettingsRow('Time stamp format',
-      'Format incl. brackets, e.g. 3h (2026-10-14 17:00:00). Empty = off', timeWrap));
-
-    // Avatar shape
+    card.appendChild(
+      createSettingsRow(
+        'Time stamp format',
+        'Format incl. brackets, e.g. 3h (2026-10-14 17:00:00). Empty = off',
+        timeWrap
+      )
+    );
     const avatarShapeCtrl = createSelectControl(
       [
         { value: 'circle', label: 'Circle (default)' },
@@ -881,20 +1506,25 @@
         { value: 'square', label: 'Square' },
       ],
       () => avatarShapeSetting.get(),
-      (v) => { avatarShapeSetting.set(v); applyAvatarShape(); }
+      (v) => {
+        avatarShapeSetting.set(v);
+        applyAvatarShape();
+      }
     );
-    card.appendChild(createSettingsRow('Avatar shape', 'Shape of profile avatars', avatarShapeCtrl.el));
-
-    // Custom CSS
+    card.appendChild(
+      createSettingsRow(
+        'Avatar shape',
+        'Shape of profile avatars',
+        avatarShapeCtrl.el
+      )
+    );
     const customCssArea = document.createElement('textarea');
     customCssArea.className = 'tt-custom-css-input';
     customCssArea.value = GM_getValue(CONFIG.customCss.key, '');
     customCssArea.placeholder = '/* 例: article { border-radius: 0; } */';
     customCssArea.spellcheck = false;
     customCssArea.style.cssText =
-      'width:100%;min-height:120px;box-sizing:border-box;padding:8px;' +
-      'font-family:monospace;font-size:12px;border-radius:8px;resize:vertical;';
-
+      'width:100%;min-height:120px;box-sizing:border-box;padding:8px;font-family:monospace;font-size:12px;border-radius:8px;resize:vertical;';
     const applyCssBtn = document.createElement('button');
     applyCssBtn.type = 'button';
     applyCssBtn.textContent = 'Apply';
@@ -904,59 +1534,62 @@
       GM_setValue(CONFIG.customCss.key, customCssArea.value);
       applyCustomCss();
     });
-
     const cssWrap = document.createElement('div');
-    cssWrap.style.cssText = 'display:flex;flex-direction:column;gap:8px;width:100%;';
+    cssWrap.style.cssText =
+      'display:flex;flex-direction:column;gap:8px;width:100%;';
     cssWrap.dataset.wide = '1';
     cssWrap.appendChild(customCssArea);
     cssWrap.appendChild(applyCssBtn);
-    card.appendChild(createSettingsRow('Custom CSS', 'Extra CSS applied to tweet.app (press Apply to save)', cssWrap));
-
-
+    card.appendChild(
+      createSettingsRow(
+        'Custom CSS',
+        'Extra CSS applied to tweet.app (press Apply to save)',
+        cssWrap
+      )
+    );
     section.appendChild(titleBlock);
     arrangeSettingsCard(card);
     section.appendChild(card);
     return section;
   }
-
   // ============================================================
-  // ナビ内メニュー: nav内の最後のbutton(Settings)の次に「Enhancer」項目を追加し、
-
+  // ナビ内メニュー
   function openEnhancerPanel() {
-    if (document.getElementById('tweetapp-enhancements-overlay')) return;
-
+    if (document.getElementById('tweetapp-enhancements-overlay')) {
+      return;
+    }
     const overlay = document.createElement('div');
     overlay.id = 'tweetapp-enhancements-overlay';
     overlay.style.cssText =
-      'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.45);' +
-      'display:flex;align-items:flex-start;justify-content:center;' +
-      'padding:24px 12px;box-sizing:border-box;overflow-y:auto;';
-
+      'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.45);display:flex;align-items:flex-start;justify-content:center;padding:24px 12px;box-sizing:border-box;overflow-y:auto;';
     const panel = document.createElement('div');
     panel.style.cssText =
-      'width:100%;max-width:560px;background:var(--color-tl-app-bg, #fff);' +
-      'border-radius:16px;padding:16px;box-sizing:border-box;position:relative;';
-
+      'width:100%;max-width:560px;background:var(--color-tl-app-bg, #fff);border-radius:16px;padding:16px;box-sizing:border-box;position:relative;';
     const closeBtn = document.createElement('button');
     closeBtn.type = 'button';
     closeBtn.textContent = 'Close';
     closeBtn.className = SITE_BTN_CLASS;
     closeBtn.style.cssText = 'flex-shrink:0;';
     closeBtn.addEventListener('click', () => overlay.remove());
-
     overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) overlay.remove();
+      if (e.target === overlay) {
+        overlay.remove();
+      }
     });
-
     const section = buildSettingsSection();
     const titleBlock = section.firstElementChild;
     const header = document.createElement('div');
-    header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;';
+    header.style.cssText =
+      'display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;';
     section.insertBefore(header, titleBlock);
     const versionLine = document.createElement('p');
-    versionLine.style.cssText = 'font-size:11px;color:var(--color-tl-app-text-muted);margin:0 0 12px;';
+    versionLine.style.cssText =
+      'font-size:11px;color:var(--color-tl-app-text-muted);margin:0 0 12px;';
     const storedVersion = GM_getValue(SITE_VERSION_KEY, '');
-    versionLine.textContent = 'tweet.app ' + (storedVersion || 'version: not recorded yet (open tweet.app Settings on PC once)');
+    versionLine.textContent =
+      'tweet.app ' +
+      (storedVersion ||
+        'version: not recorded yet (open tweet.app Settings on PC once)');
     section.insertBefore(versionLine, section.children[1] || null);
     header.appendChild(titleBlock);
     header.appendChild(closeBtn);
@@ -964,25 +1597,30 @@
     overlay.appendChild(panel);
     document.body.appendChild(overlay);
   }
-
-  // 設定メニュー項目(Your account/Security/Display等)を含むnavを優先し、無ければ表示中のnavを使う
   function findMenuNav() {
-    const navs = Array.from(document.querySelectorAll('nav')).filter((n) => n.querySelector('button'));
+    const navs = Array.from(document.querySelectorAll('nav')).filter((n) =>
+      n.querySelector('button')
+    );
     const settingsNav = navs.find((n) =>
       Array.from(n.querySelectorAll('button')).some((b) =>
-        /^(Your account|Security|Display|Followed hashtags|Muted accounts)/.test(b.textContent.trim())
+        /^(Your account|Security|Display|Followed hashtags|Muted accounts)/.test(
+          b.textContent.trim()
+        )
       )
     );
-    return settingsNav || navs.find((n) => n.offsetParent !== null) || null;
+    return (
+      settingsNav ||
+      navs.find((n) => n.offsetParent !== null) ||
+      null
+    );
   }
-
-  // 「Invite friends」ボタンを探す(PC/モバイルで nav タグの有無が変わるため、nav に依存しない)
   function findInviteButton() {
-    return Array.from(document.querySelectorAll('button'))
-      .find((b) => b.textContent.trim().startsWith('Invite friends')) || null;
+    return (
+      Array.from(document.querySelectorAll('button')).find((b) =>
+        b.textContent.trim().startsWith('Invite friends')
+      ) || null
+    );
   }
-
-  // Invite friendsの直後に「Enhancer」項目を追加する。既存項目の位置が違えば作り直す
   function injectNavMenu() {
     let anchor = findInviteButton();
     if (!anchor) {
@@ -992,76 +1630,73 @@
       anchor = buttons[buttons.length - 1] || null;
       if (!anchor) return;
     }
-
     const existing = document.getElementById('tweetapp-nav-menu');
     if (existing) {
-      if (existing.previousElementSibling === anchor) return;
+      if (existing.previousElementSibling === anchor) {
+        return;
+      }
       existing.remove();
     }
-
     const item = anchor.cloneNode(true);
     item.id = 'tweetapp-nav-menu';
     const icon = item.querySelector('svg');
     if (icon) {
       icon.setAttribute('class', 'lucide lucide-puzzle shrink-0');
       icon.setAttribute('style', 'color:#1da1f2;');
-      icon.innerHTML = '<path d="M4 8h4a2 2 0 1 1 4 0h4v4a2 2 0 1 1 0 4v4H4z" fill="#1da1f2" stroke="#1da1f2"></path>';
+      icon.innerHTML =
+        '<path d="M4 8h4a2 2 0 1 1 4 0h4v4a2 2 0 1 1 0 4v4H4z" fill="#1da1f2" stroke="#1da1f2"></path>';
     }
     const texts = item.querySelectorAll('span.flex.flex-col > span');
-    if (texts[0]) texts[0].textContent = 'Enhancer';
-    if (texts[1]) texts[1].textContent = 'Tweet.app Enhancer settings';
+    if (texts[0]) {
+      texts[0].textContent = 'Enhancer';
+    }
+    if (texts[1]) {
+      texts[1].textContent = 'Tweet.app Enhancer settings';
+    }
     item.addEventListener('click', openEnhancerPanel);
-
     anchor.insertAdjacentElement('afterend', item);
   }
-
-
   // ============================================================
   // 通知バッジ増加のポップアップ通知
-  // ============================================================
-  // サイドバーのNotificationsバッジ数をポーリングし、増加時にトーストと通知音を出す。
-  // バッジ更新の契機が多様でDOM変化を掴みにくいため、MutationObserverではなくポーリング。
-
   let lastNotificationCount = null;
   let audioCtx = null;
   let audioInitAttempted = false;
-
-  // AudioContextはユーザー操作の中で初めて呼ばれた時に生成する。
-  // ページロード時やcontent script初期化時に生成すると自動再生ポリシー違反になる。
   function ensureAudioCtx() {
     if (!audioCtx && !audioInitAttempted) {
       audioInitAttempted = true;
       try {
         audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       } catch (e) {
-        // AudioContext 生成失敗時は無視（拡張機能環境など）
         return null;
       }
     }
     if (!audioCtx) return null;
-    // resume()はPromiseを返す。ユーザー操作を伴わない呼び出し(ポーリング等)では
-    // 拒否されることがあるため、未処理のPromise拒否にならないよう必ず捕捉する。
     if (audioCtx.state === 'suspended') {
       audioCtx.resume().catch(() => {});
     }
     return audioCtx;
   }
-
-  // ページ上でのユーザーの最初の操作をきっかけにresumeを試みておく。
-  // ポーリングによる自動チェックだけではsuspendedのまま鳴らせないための保険。
   if (document.readyState !== 'loading') {
-    // ドキュメント解析済み時は遅延実行
     setTimeout(() => {
-      document.addEventListener('click', ensureAudioCtx, { once: true, capture: true });
-      document.addEventListener('keydown', ensureAudioCtx, { once: true, capture: true });
+      document.addEventListener('click', ensureAudioCtx, {
+        once: true,
+        capture: true,
+      });
+      document.addEventListener('keydown', ensureAudioCtx, {
+        once: true,
+        capture: true,
+      });
     }, 100);
   } else {
-    document.addEventListener('click', ensureAudioCtx, { once: true, capture: true });
-    document.addEventListener('keydown', ensureAudioCtx, { once: true, capture: true });
+    document.addEventListener('click', ensureAudioCtx, {
+      once: true,
+      capture: true,
+    });
+    document.addEventListener('keydown', ensureAudioCtx, {
+      once: true,
+      capture: true,
+    });
   }
-
-  // 短い正弦波を鳴らす共通ルーティン
-  // freq: Hz, startTime: ctx.currentTime基準の開始秒, duration: 秒, gain: 0~1
   function playTone(ctx, freq, startTime, duration, gain = 0.35) {
     const osc = ctx.createOscillator();
     const env = ctx.createGain();
@@ -1075,8 +1710,6 @@
     osc.start(startTime);
     osc.stop(startTime + duration + 0.05);
   }
-
-  // マリンバ風: 明るく気楽な調子。高周波を強調して軽く爽やかに
   function playMarimbaNote(ctx, freq, startTime, gain = 0.28) {
     [1, 4, 9].forEach((harmonic, i) => {
       const g = gain / (i * 0.4 + 1);
@@ -1088,13 +1721,14 @@
       osc.frequency.setValueAtTime(freq * harmonic, startTime);
       env.gain.setValueAtTime(0, startTime);
       env.gain.linearRampToValueAtTime(g, startTime + 0.004);
-      env.gain.exponentialRampToValueAtTime(0.001, startTime + 0.25 / harmonic);
+      env.gain.exponentialRampToValueAtTime(
+        0.001,
+        startTime + 0.25 / harmonic
+      );
       osc.start(startTime);
       osc.stop(startTime + 0.4);
     });
   }
-
-  // ベル風: 明るく気楽な調子。高倍音を強調して爽やかに
   function playBellNote(ctx, freq, startTime, gain = 0.22) {
     [1, 3, 6].forEach((ratio, i) => {
       const osc = ctx.createOscillator();
@@ -1106,70 +1740,31 @@
       const g = gain / (i * 0.5 + 1);
       env.gain.setValueAtTime(0, startTime);
       env.gain.linearRampToValueAtTime(g, startTime + 0.004);
-      env.gain.exponentialRampToValueAtTime(0.001, startTime + 0.6 - i * 0.12);
+      env.gain.exponentialRampToValueAtTime(
+        0.001,
+        startTime + 0.6 - i * 0.12
+      );
       osc.start(startTime);
       osc.stop(startTime + 0.75);
     });
   }
-
-  const SOUND_PLAYERS = {
-    none: () => {},
-    // 明るい3音上昇チャイム(C4→E4→G4)
-    chime: () => {
-      const ctx = ensureAudioCtx(); if (!ctx) return;
-      const t = ctx.currentTime;
-      [261.63, 329.63, 392.00].forEach((freq, i) => playTone(ctx, freq, t + i * 0.12, 0.35));
-    },
-    // 軽い水滴音: 明るく軽い調子で素早くフェードアウト
-    drop: () => {
-      const ctx = ensureAudioCtx(); if (!ctx) return;
-      const t = ctx.currentTime;
-      playTone(ctx, 988, t, 0.15, 0.25);
-    },
-    // マリンバ風2音下降(G4→E4)
-    marimba: () => {
-      const ctx = ensureAudioCtx(); if (!ctx) return;
-      const t = ctx.currentTime;
-      playMarimbaNote(ctx, 392.00, t);
-      playMarimbaNote(ctx, 329.63, t + 0.12);
-    },
-    // ベル風2音上昇(E4→G4)
-    bell: () => {
-      const ctx = ensureAudioCtx(); if (!ctx) return;
-      const t = ctx.currentTime;
-      playBellNote(ctx, 329.63, t);
-      playBellNote(ctx, 392.00, t + 0.15, 0.22);
-    },
-    // ポップ: 低めから跳ね上がる軽い泡音
-    pop: () => {
-      const ctx = ensureAudioCtx(); if (!ctx) return;
-      playSweepNote(ctx, 520, 1400, ctx.currentTime, 0.12, 0.3);
-    },
-    // スパークル: 高音のキラキラした上昇アルペジオ
-    sparkle: () => {
-      const ctx = ensureAudioCtx(); if (!ctx) return;
-      const t = ctx.currentTime;
-      [1046.5, 1318.5, 1568.0, 2093.0].forEach((f, i) =>
-        playSweepNote(ctx, f, f * 1.02, t + i * 0.055, 0.14, 0.18, 'triangle'));
-    },
-    // ピン: 金属的な倍音を持つ鐘型の「チン」(ピッチ変化なし、余韻あり)
-    ping: () => {
-      const ctx = ensureAudioCtx(); if (!ctx) return;
-      const t = ctx.currentTime;
-      const f = 1760;
-      playSweepNote(ctx, f, f, t, 0.35, 0.22, 'sine');
-      playSweepNote(ctx, f * 2.76, f * 2.76, t, 0.2, 0.08, 'sine');
-      playSweepNote(ctx, f * 5.40, f * 5.40, t, 0.1, 0.03, 'sine');
-    },
-  };
-
-  // 周波数が跳ねる短い音(pop用)
-  function playSweepNote(ctx, fromFreq, toFreq, startTime, duration, gain = 0.25, type = 'sine') {
+  function playSweepNote(
+    ctx,
+    fromFreq,
+    toFreq,
+    startTime,
+    duration,
+    gain = 0.25,
+    type = 'sine'
+  ) {
     const osc = ctx.createOscillator();
     const env = ctx.createGain();
     osc.type = type;
     osc.frequency.setValueAtTime(fromFreq, startTime);
-    osc.frequency.exponentialRampToValueAtTime(toFreq, startTime + duration * 0.5);
+    osc.frequency.exponentialRampToValueAtTime(
+      toFreq,
+      startTime + duration * 0.5
+    );
     env.gain.setValueAtTime(0.0001, startTime);
     env.gain.exponentialRampToValueAtTime(gain, startTime + 0.01);
     env.gain.exponentialRampToValueAtTime(0.001, startTime + duration);
@@ -1178,75 +1773,129 @@
     osc.start(startTime);
     osc.stop(startTime + duration + 0.02);
   }
-
+  const SOUND_PLAYERS = {
+    none: () => {},
+    chime: () => {
+      const ctx = ensureAudioCtx();
+      if (!ctx) return;
+      const t = ctx.currentTime;
+      [261.63, 329.63, 392.0].forEach((freq, i) =>
+        playTone(ctx, freq, t + i * 0.12, 0.35)
+      );
+    },
+    drop: () => {
+      const ctx = ensureAudioCtx();
+      if (!ctx) return;
+      playTone(ctx, 988, ctx.currentTime, 0.15, 0.25);
+    },
+    marimba: () => {
+      const ctx = ensureAudioCtx();
+      if (!ctx) return;
+      const t = ctx.currentTime;
+      playMarimbaNote(ctx, 392.0, t);
+      playMarimbaNote(ctx, 329.63, t + 0.12);
+    },
+    bell: () => {
+      const ctx = ensureAudioCtx();
+      if (!ctx) return;
+      const t = ctx.currentTime;
+      playBellNote(ctx, 329.63, t);
+      playBellNote(ctx, 392.0, t + 0.15, 0.22);
+    },
+    pop: () => {
+      const ctx = ensureAudioCtx();
+      if (!ctx) return;
+      playSweepNote(ctx, 520, 1400, ctx.currentTime, 0.12, 0.3);
+    },
+    sparkle: () => {
+      const ctx = ensureAudioCtx();
+      if (!ctx) return;
+      const t = ctx.currentTime;
+      [1046.5, 1318.5, 1568.0, 2093.0].forEach((f, i) =>
+        playSweepNote(ctx, f, f * 1.02, t + i * 0.055, 0.14, 0.18, 'triangle')
+      );
+    },
+    ping: () => {
+      const ctx = ensureAudioCtx();
+      if (!ctx) return;
+      const t = ctx.currentTime;
+      const f = 1760;
+      playSweepNote(ctx, f, f, t, 0.35, 0.22, 'sine');
+      playSweepNote(ctx, f * 2.76, f * 2.76, t, 0.2, 0.08, 'sine');
+      playSweepNote(ctx, f * 5.4, f * 5.4, t, 0.1, 0.03, 'sine');
+    },
+  };
   function playNotificationSound() {
     try {
-      ensureAudioCtx(); // suspendedを毎回チェックして確実にresume
+      ensureAudioCtx();
       const sound = notificationSoundSetting.get();
       SOUND_PLAYERS[sound]?.();
-    } catch (e) {
-      // Web Audio APIが使えない環境では無視
-    }
+    } catch (e) {}
   }
-
   function findNotificationBadge() {
     const label = Array.from(document.querySelectorAll('span, div')).find(
-      (el) => el.children.length === 0 && el.textContent.trim() === 'Notifications'
+      (el) =>
+        el.children.length === 0 &&
+        el.textContent.trim() === 'Notifications'
     );
-    return label?.closest('a, button')?.querySelector('span.rounded-full') || null;
+    return (
+      label?.closest('a, button')?.querySelector('span.rounded-full') ||
+      null
+    );
   }
-
   function getNotificationBadgeCount() {
     const badge = findNotificationBadge();
     if (!badge) return 0;
     const count = parseInt(badge.textContent.trim(), 10);
     return Number.isNaN(count) ? 0 : count;
   }
-
   function showNotificationToast(delta) {
-    document.querySelectorAll('.tt-notification-toast').forEach((el) => el.remove());
-
+    document
+      .querySelectorAll('.tt-notification-toast')
+      .forEach((el) => el.remove());
     const toast = document.createElement('div');
     toast.className = 'tt-notification-toast';
     toast.textContent =
-      delta === 1 ? 'You have a new notification!' : `You have ${delta} new notifications!`;
+      delta === 1
+        ? 'You have a new notification!'
+        : `You have ${delta} new notifications!`;
     document.body.appendChild(toast);
-
     playNotificationSound();
-
     requestAnimationFrame(() => toast.classList.add('tt-toast-show'));
     setTimeout(() => {
       toast.classList.remove('tt-toast-show');
       setTimeout(() => toast.remove(), 250);
     }, CONFIG.notificationToast.displayMs);
   }
-
-  // tweet.appのフッター表記(例: v2.3.0 · 1791512375)を保存し、変化したら通知する
   const SITE_VERSION_KEY = 'tweetapp_site_version';
   const SITE_VERSION_PATTERN = /v\d+\.\d+\.\d+\s*·\s*\d+/;
-
-  function showToastMessage(text) {
-    document.querySelectorAll('.tt-notification-toast').forEach((el) => el.remove());
+  // playSound=false の場合はポップアップのみ表示し、通知音は鳴らさない
+  function showToastMessage(text, playSound = true) {
+    document
+      .querySelectorAll('.tt-notification-toast')
+      .forEach((el) => el.remove());
     const toast = document.createElement('div');
     toast.className = 'tt-notification-toast';
     toast.textContent = text;
-    toast.style.cssText = 'white-space:pre-line;text-align:center;line-height:1.5;width:max-content;max-width:90vw;height:auto;';
+    toast.style.cssText =
+      'white-space:pre-line;text-align:center;line-height:1.5;width:max-content;max-width:90vw;height:auto;';
     document.body.appendChild(toast);
-    playNotificationSound();
+    if (playSound) {
+      playNotificationSound();
+    }
     requestAnimationFrame(() => toast.classList.add('tt-toast-show'));
     setTimeout(() => {
       toast.classList.remove('tt-toast-show');
       setTimeout(() => toast.remove(), 250);
     }, CONFIG.notificationToast.displayMs);
   }
-
-  // 相対時間(title属性のISO時刻)の横に絶対時間を表示する
-  const ISO_TIME_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
-
-  // 形式(ISO 8601準拠): YYYY=年 MM=月 DD=日 hh=時 mm=分 ss=秒(大文字小文字を区別、端末のタイムゾーンで計算)
+  const ISO_TIME_PATTERN =
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
   function formatAbsoluteTime(iso, fmt) {
     const d = new Date(iso);
-    if (isNaN(d.getTime())) return null;
+    if (isNaN(d.getTime())) {
+      return null;
+    }
     const p = (n) => String(n).padStart(2, '0');
     const values = {
       YYYY: String(d.getFullYear()),
@@ -1258,23 +1907,34 @@
     };
     return fmt.replace(/YYYY|MM|DD|hh|mm|ss/g, (t) => values[t]);
   }
-
-  const ABS_TIME_STYLE = 'white-space:nowrap;font-size:10pt;margin-left:0.25em;';
-
+  const ABS_TIME_STYLE =
+    'white-space:nowrap;font-size:10pt;margin-left:0.25em;';
   function processAbsoluteTimes() {
-    if (['yyyy-mm-dd hh:mm:ss', 'YYYY-MM-DD hh:mm:ss'].includes(timeFormatSetting.get())) {
+    if (
+      ['yyyy-mm-dd hh:mm:ss', 'YYYY-MM-DD hh:mm:ss'].includes(
+        timeFormatSetting.get()
+      )
+    ) {
       timeFormatSetting.set(CONFIG.timeFormat.default);
     }
     if (!timeEnabledSetting.get()) {
-      document.querySelectorAll('.tt-abs-time').forEach((el) => el.remove());
+      document
+        .querySelectorAll('.tt-abs-time')
+        .forEach((el) => el.remove());
       return;
     }
-    document.querySelectorAll('.tt-abs-time').forEach((el) => { el.style.cssText = ABS_TIME_STYLE; });
+    document
+      .querySelectorAll('.tt-abs-time')
+      .forEach((el) => (el.style.cssText = ABS_TIME_STYLE));
     const fmt = timeFormatSetting.get();
     if (!fmt) return;
     document.querySelectorAll('span[title]').forEach((el) => {
-      if (!ISO_TIME_PATTERN.test(el.title)) return;
-      if (el.querySelector(':scope > .tt-abs-time')) return;
+      if (!ISO_TIME_PATTERN.test(el.title)) {
+        return;
+      }
+      if (el.querySelector(':scope > .tt-abs-time')) {
+        return;
+      }
       const text = formatAbsoluteTime(el.title, fmt);
       if (!text) return;
       const abs = document.createElement('span');
@@ -1284,34 +1944,41 @@
       el.appendChild(abs);
     });
   }
-
-  // 投稿を別タブで開く。新タブでは投稿欄のみ表示し、投稿欄が閉じたらタブを閉じる
   const COMPOSE_PARAM = 'tt_compose';
-
   function isComposeTabMode() {
     return new URLSearchParams(location.search).has(COMPOSE_PARAM);
   }
-
   function interceptComposeClick() {
-    document.addEventListener('click', (e) => {
-      if (!composeTabSetting.get()) return;
-      if (isComposeTabMode()) return;
-      const btn = e.target.closest && e.target.closest('#public-sidebar-compose-btn, #public-mobile-compose-btn');
-      if (!btn) return;
-      e.preventDefault();
-      e.stopPropagation();
-      // 別ウインドウ指定(Macでは別ウインドウ、iPadではタブになる)。同名で開き直すと同じウインドウを再利用
-      const W = 560, H = 600;
-      const left = Math.round(screen.width / 2 - W / 2);
-      const top = Math.round(screen.height / 2 - H / 2);
-      window.open(
-        `${location.origin}${location.pathname}?${COMPOSE_PARAM}=1`,
-        'tt_compose',
-        `left=${left},top=${top},width=${W},height=${H},menubar=no,toolbar=no,location=yes,status=no,scrollbars=yes,resizable=yes`
-      );
-    }, true);
+    document.addEventListener(
+      'click',
+      (e) => {
+        if (!composeTabSetting.get()) {
+          return;
+        }
+        if (isComposeTabMode()) {
+          return;
+        }
+        const btn =
+          e.target.closest &&
+          e.target.closest(
+            '#public-sidebar-compose-btn, #public-mobile-compose-btn'
+          );
+        if (!btn) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const W = 560;
+        const H = 600;
+        const left = Math.round(screen.width / 2 - W / 2);
+        const top = Math.round(screen.height / 2 - H / 2);
+        window.open(
+          `${location.origin}${location.pathname}?${COMPOSE_PARAM}=1`,
+          'tt_compose',
+          `left=${left},top=${top},width=${W},height=${H},menubar=no,toolbar=no,location=yes,status=no,scrollbars=yes,resizable=yes`
+        );
+      },
+      true
+    );
   }
-
   function runComposeTabMode() {
     const style = document.createElement('style');
     style.textContent =
@@ -1319,21 +1986,23 @@
       'body.tt-compose-only [data-tt-compose-keep] { visibility: visible !important; }';
     document.head.appendChild(style);
     document.body.classList.add('tt-compose-only');
-
     const openTimer = setInterval(() => {
-      const btn = document.getElementById('public-sidebar-compose-btn') || document.getElementById('public-mobile-compose-btn');
+      const btn =
+        document.getElementById('public-sidebar-compose-btn') ||
+        document.getElementById('public-mobile-compose-btn');
       if (!btn) return;
       clearInterval(openTimer);
       btn.click();
     }, 200);
-
     let shown = false;
     const watchTimer = setInterval(() => {
       const ta = document.getElementById('public-modal-tweet-input');
       if (ta) {
         shown = true;
         const overlay = ta.closest('.fixed');
-        if (overlay) overlay.setAttribute('data-tt-compose-keep', '');
+        if (overlay) {
+          overlay.setAttribute('data-tt-compose-keep', '');
+        }
         return;
       }
       if (shown) {
@@ -1342,96 +2011,184 @@
       }
     }, 300);
   }
-
   function checkSiteVersion() {
-    const el = Array.from(document.querySelectorAll('aside p'))
-      .find((p) => SITE_VERSION_PATTERN.test(p.textContent));
+    const el = Array.from(document.querySelectorAll('aside p')).find((p) =>
+      SITE_VERSION_PATTERN.test(p.textContent)
+    );
     if (!el) return;
     const current = el.textContent.trim();
     const stored = GM_getValue(SITE_VERSION_KEY, '');
-    if (current === stored) return;
+    if (current === stored) {
+      return;
+    }
     GM_setValue(SITE_VERSION_KEY, current);
-    // 初回取得時は記録のみ。2回目以降の変化で通知する
-    if (stored) showToastMessage(`tweet.app updated:\n${stored} →\n${current}`);
+    if (stored) {
+      showToastMessage(`tweet.app updated:\n${stored} →\n${current}`);
+    }
   }
-
   function checkNotificationCount() {
-    if (!notificationToastEnabledSetting.get()) return;
+    if (!notificationToastEnabledSetting.get()) {
+      return;
+    }
     const current = getNotificationBadgeCount();
-    // 初回は基準値の記録のみ（既存の未読数で誤発火させない）
     if (lastNotificationCount === null) {
       lastNotificationCount = current;
       return;
     }
-    if (current > lastNotificationCount) showNotificationToast(current - lastNotificationCount);
+    if (current > lastNotificationCount) {
+      showNotificationToast(current - lastNotificationCount);
+    }
     lastNotificationCount = current;
   }
-
   function startNotificationPolling() {
-    setInterval(checkNotificationCount, CONFIG.notificationToast.pollIntervalMs);
+    setInterval(
+      checkNotificationCount,
+      CONFIG.notificationToast.pollIntervalMs
+    );
   }
-
   // ============================================================
   // OGPキャッシュ & リンクカード
-
+  // ogpCache: url -> { data, ts }  (成功した結果のみ保持)
+  // ogpFail : url -> { n, ts }     (失敗回数と最終失敗時刻。キャッシュには保存しない)
   const ogpCache = new Map();
-
+  const ogpFail = new Map();
   function loadOgpCacheFromStorage() {
     const stored = GM_getValue(CONFIG.linkCard.cacheKey, {});
     const now = Date.now();
     for (const [url, entry] of Object.entries(stored)) {
-      if (entry?.ts && now - entry.ts < CONFIG.linkCard.cacheTtlMs) {
-        ogpCache.set(url, entry.data);
+      if (
+        entry?.data &&
+        entry?.ts &&
+        now - entry.ts < CONFIG.linkCard.cacheTtlMs
+      ) {
+        ogpCache.set(url, { data: entry.data, ts: entry.ts });
       }
     }
   }
-
   function persistOgpCache() {
-    const now = Date.now();
-    const entries = Array.from(ogpCache.entries()).slice(-CONFIG.linkCard.cacheMaxEntries);
+    const entries = Array.from(ogpCache.entries()).slice(
+      -CONFIG.linkCard.cacheMaxEntries
+    );
     const obj = {};
-    for (const [url, data] of entries) {
-      obj[url] = { data, ts: now };
+    for (const [url, entry] of entries) {
+      obj[url] = { data: entry.data, ts: entry.ts };
     }
     GM_setValue(CONFIG.linkCard.cacheKey, obj);
   }
-
+  function ogpCooldownMs(failCount) {
+    return Math.min(5 * 60 * 1000, 15000 * Math.pow(2, failCount));
+  }
+  function markOgpFailed(url) {
+    const prev = ogpFail.get(url);
+    ogpFail.set(url, { n: (prev?.n || 0) + 1, ts: Date.now() });
+  }
   function fetchOgp(url, cb) {
-    if (ogpCache.has(url)) return cb(ogpCache.get(url));
-
-    bgFetch(url)
-      .then((res) => {
-        try {
-          const data = parseOgpFromHtml(res.text);
-          ogpCache.set(url, data);
-          persistOgpCache();
-          cb(data);
-        } catch (e) {
-          cb(null);
+    const cached = ogpCache.get(url);
+    if (cached) {
+      return cb(cached.data);
+    }
+    const failed = ogpFail.get(url);
+    if (
+      failed &&
+      Date.now() - failed.ts < ogpCooldownMs(failed.n - 1)
+    ) {
+      return cb(null);
+    }
+    GM_xmlhttpRequest({
+      method: 'GET',
+      url,
+      timeout: CONFIG.linkCard.fetchTimeoutMs,
+      headers: { Accept: 'text/html,application/xhtml+xml' },
+      onload: (res) => {
+        let data = null;
+        if (res.status >= 200 && res.status < 300) {
+          try {
+            data = parseOgpFromHtml(
+              res.responseText,
+              res.finalUrl || url
+            );
+          } catch (e) {
+            data = null;
+          }
         }
-      })
-      .catch(() => cb(null));
+        if (!data) {
+          markOgpFailed(url);
+          cb(null);
+          return;
+        }
+        ogpFail.delete(url);
+        ogpCache.set(url, { data, ts: Date.now() });
+        persistOgpCache();
+        cb(data);
+      },
+      onerror: () => {
+        markOgpFailed(url);
+        cb(null);
+      },
+      ontimeout: () => {
+        markOgpFailed(url);
+        cb(null);
+      },
+    });
   }
-
-  function parseOgpFromHtml(html) {
+  function parseOgpFromHtml(html, baseUrl) {
     const doc = new DOMParser().parseFromString(html, 'text/html');
-    const getMeta = (prop) =>
-      doc.querySelector(`meta[property="${prop}"]`)?.content
-      || doc.querySelector(`meta[name="${prop}"]`)?.content
-      || '';
-
-    const title = getMeta('og:title') || doc.querySelector('title')?.textContent || '';
-    const description = getMeta('og:description') || getMeta('description');
-    const image = getMeta('og:image');
-
-    if (!title && !image) return null;
-    return { title, description, image: image ? { url: image } : null };
+    const getMeta = (...props) => {
+      for (const prop of props) {
+        const v =
+          doc.querySelector(`meta[property="${prop}"]`)?.content ||
+          doc.querySelector(`meta[name="${prop}"]`)?.content ||
+          '';
+        if (v && v.trim()) return v.trim();
+      }
+      return '';
+    };
+    const title =
+      getMeta('og:title', 'twitter:title') ||
+      doc.querySelector('title')?.textContent?.trim() ||
+      '';
+    const description = getMeta(
+      'og:description',
+      'twitter:description',
+      'description'
+    );
+    let image = getMeta(
+      'og:image',
+      'og:image:url',
+      'twitter:image',
+      'twitter:image:src'
+    );
+    if (image) {
+      try {
+        image = new URL(image, baseUrl).href;
+      } catch (e) {
+        image = '';
+      }
+    }
+    if (!title && !image) {
+      return null;
+    }
+    return {
+      title,
+      description,
+      image: image ? { url: image } : null,
+    };
   }
-
+  // 本文中の最初の「外部」リンクを返す(同一オリジンのメンション/ハッシュタグ等は除外)
   function extractUrl(article) {
-    return article.querySelector('p a[href^="http"]')?.href ?? null;
+    const links = article.querySelectorAll('p a[href^="http"]');
+    for (const a of links) {
+      let u;
+      try {
+        u = new URL(a.href);
+      } catch (e) {
+        continue;
+      }
+      if (u.origin === location.origin) continue;
+      return { url: u.href, link: a };
+    }
+    return null;
   }
-
   function escapeHtml(value) {
     return String(value)
       .replaceAll('&', '&amp;')
@@ -1440,26 +2197,26 @@
       .replaceAll('"', '&quot;')
       .replaceAll("'", '&#39;');
   }
-
   function buildLinkCard(data, url) {
     const wrapper = document.createElement('div');
     wrapper.dataset.ogpCard = url;
     wrapper.className = `rounded-2xl overflow-hidden ${CONFIG.linkCard.className}`;
-    wrapper.style.cssText = 'margin-top:8px;margin-left:auto;margin-right:auto;';
-
+    wrapper.style.cssText =
+      'margin-top:8px;margin-left:auto;margin-right:auto;';
     const card = document.createElement('a');
     card.href = url;
     card.target = '_blank';
     card.rel = 'noopener noreferrer';
-    card.style.cssText = 'display:block;border:1px solid #d9d9d9;border-radius:12px;overflow:hidden;text-decoration:none;color:inherit;';
-
+    card.style.cssText =
+      'display:block;border:1px solid #d9d9d9;border-radius:12px;overflow:hidden;text-decoration:none;color:inherit;';
     const hostname = escapeHtml(new URL(url).hostname);
     const title = escapeHtml(data.title || '');
     const description = escapeHtml((data.description || '').slice(0, 100));
     const image = data.image?.url
-      ? `<img src="${escapeHtml(data.image.url)}" style="width:100%;max-height:200px;object-fit:cover;display:block;">`
+      ? `<img src="${escapeHtml(
+          data.image.url
+        )}" style="width:100%;max-height:200px;object-fit:cover;display:block;">`
       : '';
-
     card.innerHTML = `
       ${image}
       <div style="padding:8px 12px;">
@@ -1467,84 +2224,85 @@
         <div style="font-weight:600;font-size:14px;margin-top:2px;">${title}</div>
         <div style="font-size:13px;color:#536471;margin-top:2px;">${description}</div>
       </div>`;
-
     wrapper.appendChild(card);
     return wrapper;
   }
-
   function removeAllLinkCards() {
-    document.querySelectorAll('[data-ogp-card]').forEach((el) => el.remove());
-    document.querySelectorAll('article[data-ogp-fetching]').forEach((el) => delete el.dataset.ogpFetching);
+    document
+      .querySelectorAll('[data-ogp-card]')
+      .forEach((el) => el.remove());
+    document
+      .querySelectorAll('article[data-ogp-fetching]')
+      .forEach((el) => delete el.dataset.ogpFetching);
   }
-
-  function findReactionBar(article) {
-    // リアクションアイコン群を探す。複数の方法を試す
-    
-    // 方法1: data-testid 属性
-    let bar = article.querySelector('[data-testid="tweet-action-bar"]');
-    if (bar) return bar;
-    
-    // 方法2: 「いいね」のボタンが入っているコンテナ（心のアイコン）
-    bar = article.querySelector('[data-testid="like"]')?.closest('.flex, div[class*="gap"]');
-    if (bar) return bar;
-    
-    // 方法3: flex + items-center の組み合わせ
-    bar = article.querySelector('.flex.items-center');
-    if (bar) return bar;
-    
-    // 方法4: article 直下の最後のdiv（最後の手段）
-    const divs = article.querySelectorAll(':scope > div');
-    if (divs.length > 0) {
-      return divs[divs.length - 1];
+  // カード挿入位置: リンクを含む段落の直後。続く兄弟にメディアがあればその最後の直後。
+  function findCardAnchor(link) {
+    const p = link.closest('p') || link;
+    let anchor = p;
+    let sib = p.nextElementSibling;
+    while (sib) {
+      if (
+        !sib.hasAttribute('data-ogp-card') &&
+        (sib.matches('div.rounded-2xl.overflow-hidden') ||
+          sib.querySelector('img[alt="Attached media"], video'))
+      ) {
+        anchor = sib;
+      }
+      sib = sib.nextElementSibling;
     }
-    
-    return null;
+    return anchor;
   }
-
   function processArticle(article) {
-    if (!linkCardEnabledSetting.get()) return;
-
-    const url = extractUrl(article);
+    if (!linkCardEnabledSetting.get()) {
+      return;
+    }
+    const found = extractUrl(article);
     const existingCard = article.querySelector('[data-ogp-card]');
-
-    if (!url) {
-      if (existingCard) existingCard.remove();
+    if (!found) {
+      if (existingCard) {
+        existingCard.remove();
+      }
       delete article.dataset.ogpFetching;
       return;
     }
-
+    const url = found.url;
     if (existingCard) {
-      if (existingCard.dataset.ogpCard === url) return;
+      if (existingCard.dataset.ogpCard === url) {
+        return;
+      }
       existingCard.remove();
       delete article.dataset.ogpFetching;
     }
-
-    if (article.dataset.ogpFetching === url) return;
+    if (article.dataset.ogpFetching === url) {
+      return;
+    }
     article.dataset.ogpFetching = url;
-
     fetchOgp(url, (data) => {
-      if (article.dataset.ogpFetching !== url) return;
-      delete article.dataset.ogpFetching;
-
-      if (!linkCardEnabledSetting.get()) return;
-      if (!data) return;
-      if (article.querySelector('[data-ogp-card]')) return;
-
-      // リアクションバーの直前にカード挿入。見つからない場合は従来通り p タグ直後
-      const reactionBar = findReactionBar(article);
-      const linkCard = buildLinkCard(data, url);
-      if (reactionBar) {
-        reactionBar.insertAdjacentElement('beforebegin', linkCard);
-      } else {
-        article.querySelector('p')?.insertAdjacentElement('afterend', linkCard);
+      if (article.dataset.ogpFetching !== url) {
+        return;
       }
+      delete article.dataset.ogpFetching;
+      if (!linkCardEnabledSetting.get()) {
+        return;
+      }
+      if (!data) return;
+      if (article.querySelector('[data-ogp-card]')) {
+        return;
+      }
+      // 取得中にDOMが変わった場合に備えて再取得
+      const current = extractUrl(article);
+      if (!current || current.url !== url) {
+        return;
+      }
+      const linkCard = buildLinkCard(data, url);
+      findCardAnchor(current.link).insertAdjacentElement(
+        'afterend',
+        linkCard
+      );
     });
   }
-
   // ============================================================
-  // 投稿(compose)欄の翻訳機能
-
-
+  // 投稿(compose)欄の翻訳機能 & GIFボタン設定
   function buildTranslateUrl(endpoint, text, lang) {
     if (endpoint === 'primary') {
       return (
@@ -1554,7 +2312,6 @@
         encodeURIComponent(text)
       );
     }
-    // フォールバック: clients5経由
     return (
       'https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=auto&tl=' +
       encodeURIComponent(lang) +
@@ -1562,13 +2319,11 @@
       encodeURIComponent(text)
     );
   }
-
   function parseTranslateResponse(endpoint, responseText) {
     const data = JSON.parse(responseText);
     if (endpoint === 'primary') {
       return data[0].map((seg) => seg[0]).join('');
     }
-    // clients5(dict-chrome-ex)形式: [["翻訳結果","検出された原文言語コード"]]
     if (Array.isArray(data) && Array.isArray(data[0])) {
       return data[0][0];
     }
@@ -1580,60 +2335,55 @@
     }
     throw new Error('unexpected format');
   }
-
   function requestTranslateOnce(endpoint, text, lang, onSuccess, onFail) {
-    bgFetch(buildTranslateUrl(endpoint, text, lang))
-      .then((res) => {
+    GM_xmlhttpRequest({
+      method: 'GET',
+      url: buildTranslateUrl(endpoint, text, lang),
+      onload: function (res) {
         if (res.status < 200 || res.status >= 300) {
-          onFail(res.status, res.text);
+          onFail(res.status, res.responseText);
           return;
         }
         try {
-          onSuccess(parseTranslateResponse(endpoint, res.text));
+          onSuccess(parseTranslateResponse(endpoint, res.responseText));
         } catch (err) {
-          onFail('parse', res.text);
+          onFail('parse', res.responseText);
         }
-      })
-      .catch((err) => onFail('network', err));
+      },
+      onerror: function (err) {
+        onFail('network', err);
+      },
+      ontimeout: function () {
+        onFail('timeout', null);
+      },
+    });
   }
-
   function callTranslateApi(text, lang, onSuccess, onFail) {
-    // primaryが429ならfallbackへ切替
-    requestTranslateOnce(
-      'primary',
-      text,
-      lang,
-      onSuccess,
-      (status) => {
-        if (status === 429) {
-          requestTranslateOnce(
-            'fallback',
-            text,
-            lang,
-            onSuccess,
-            (status2) => {
-              onFail(
-                status2 === 429
-                  ? 'Rate limited — please wait a moment and try again'
-                  : 'HTTP ' + status2
-              );
-            }
+    requestTranslateOnce('primary', text, lang, onSuccess, (status) => {
+      if (status === 429) {
+        requestTranslateOnce('fallback', text, lang, onSuccess, (status2) => {
+          onFail(
+            status2 === 429
+              ? 'Rate limited — please wait a moment and try again'
+              : 'HTTP ' + status2
           );
-        } else {
-          onFail(status === 'parse' ? 'Parse error' : status === 'network' ? 'Network error' : status === 'timeout' ? 'Timeout' : 'HTTP ' + status);
-        }
+        });
+      } else {
+        onFail(
+          status === 'parse'
+            ? 'Parse error'
+            : status === 'network'
+              ? 'Network error'
+              : status === 'timeout'
+                ? 'Timeout'
+                : 'HTTP ' + status
+        );
       }
-    );
+    });
   }
-
-  function getComposeEls() {
-    return Array.from(document.querySelectorAll(CONFIG.translate.composeSelector));
-  }
-
   function getComposeText(el) {
     return el.tagName === 'TEXTAREA' ? el.value : el.textContent;
   }
-
   function updateComposeBtnLabel(btn) {
     const lang = translateLangSetting.get();
     if (lang === CONFIG.translate.noneValue) {
@@ -1647,11 +2397,11 @@
       btn.textContent = `🌐 Insert translation (${lang})`;
     }
   }
-
   function refreshAllTranslateBtnLabels() {
-    document.querySelectorAll('.tt-compose-btn').forEach(updateComposeBtnLabel);
+    document
+      .querySelectorAll('.tt-compose-btn')
+      .forEach(updateComposeBtnLabel);
   }
-
   function insertTranslationIntoCompose(el, translatedText) {
     if (el.tagName === 'TEXTAREA') {
       const current = el.value;
@@ -1663,7 +2413,6 @@
       nativeSetter.call(el, current + sep + translatedText);
       el.dispatchEvent(new Event('input', { bubbles: true }));
     } else {
-      // contenteditable
       const br = document.createElement('br');
       const textNode = document.createTextNode(translatedText);
       el.appendChild(br);
@@ -1671,123 +2420,135 @@
       el.dispatchEvent(new Event('input', { bubbles: true }));
     }
   }
-
   function findActionBar(composeEl) {
-    // compose要素から最も近い、Add Photo/Video/Poll のボタン群を探す
-    
     let current = composeEl;
     while (current && current.tagName !== 'BODY') {
       const parent = current.parentElement;
       if (!parent) break;
-      
-      // 親の直下の兄弟要素を探索
       const nextSibling = current.nextElementSibling;
-      if (nextSibling && nextSibling.textContent.includes('Photo') && nextSibling.textContent.includes('Video')) {
+      if (
+        nextSibling &&
+        nextSibling.textContent.includes('Photo') &&
+        nextSibling.textContent.includes('Video')
+      ) {
         return nextSibling;
       }
-      
-      // 親の子要素の中から flex コンテナで Add Photo を含むものを探す
-      const flexes = parent.querySelectorAll('[class*="flex"][class*="gap"], [class*="flex items"]');
+      const flexes = parent.querySelectorAll(
+        '[class*="flex"][class*="gap"], [class*="flex items"]'
+      );
       for (const flex of flexes) {
-        if (flex.textContent.includes('Photo') && flex.textContent.includes('Video')) {
+        if (
+          flex.textContent.includes('Photo') &&
+          flex.textContent.includes('Video')
+        ) {
           return flex;
         }
       }
-      
       current = parent;
     }
     return null;
   }
-
-  // ポップアップ(position:fixedのオーバーレイ内)の場合、上端位置を固定して下方向にのみ伸ばす
   function pinPopupTop(textarea) {
     let overlay = null;
     let el = textarea.parentElement;
     while (el && el !== document.body) {
-      if (getComputedStyle(el).position === 'fixed') { overlay = el; break; }
+      if (getComputedStyle(el).position === 'fixed') {
+        overlay = el;
+        break;
+      }
       el = el.parentElement;
     }
-    if (!overlay) return; // TL内編集は対象外
-
-    // overlay直下で textarea を含む要素 = ポップアップ本体(カード)
+    if (!overlay) return;
     let card = textarea;
-    while (card.parentElement && card.parentElement !== overlay) card = card.parentElement;
-    if (card === textarea || card.parentElement !== overlay) return;
-
+    while (card.parentElement && card.parentElement !== overlay) {
+      card = card.parentElement;
+    }
+    if (card === textarea || card.parentElement !== overlay) {
+      return;
+    }
     const top = card.getBoundingClientRect().top;
     overlay.style.setProperty('align-items', 'flex-start', 'important');
     overlay.style.setProperty('place-items', 'start center', 'important');
     card.style.setProperty('top', '10px', 'important');
-    // card.style.setProperty('margin-top', top + 'px', 'important'); // 上は10pxで固定
     card.style.setProperty('margin-bottom', '0', 'important');
-
-    // 上端がずれた場合のフォールバック(中央寄せがtransform等の場合)
     requestAnimationFrame(() => {
       const diff = card.getBoundingClientRect().top - top;
       if (Math.abs(diff) > 1) {
-        const r = card.getBoundingClientRect();
+        // 表示直後の位置(left)を固定すると横にズレるため、
+        // left/right:0 + margin:auto でビューポート中央に配置する。
+        // 幅は transform の影響を受けない offsetWidth から取得する。
+        const w = card.offsetWidth;
         card.style.setProperty('margin-top', '0', 'important');
         card.style.setProperty('position', 'fixed', 'important');
         card.style.setProperty('top', '10px', 'important');
-        card.style.setProperty('left', r.left + 'px', 'important');
-        card.style.setProperty('width', r.width + 'px', 'important');
+        card.style.setProperty('left', '0', 'important');
+        card.style.setProperty('right', '0', 'important');
+        card.style.setProperty('margin-left', 'auto', 'important');
+        card.style.setProperty('margin-right', 'auto', 'important');
+        card.style.setProperty('width', w + 'px', 'important');
+        card.style.setProperty('max-width', 'calc(100vw - 32px)', 'important');
         card.style.setProperty('transform', 'none', 'important');
       }
     });
   }
-
   function autoGrowTextarea(textarea) {
-    // textarea の高さを内容に応じて自動調整（設定がONの場合のみ）
-    if (textarea.tagName !== 'TEXTAREA') return;
-    if (!GM_getValue(CONFIG.autogrow.enabledKey, CONFIG.autogrow.enabledDefault)) return;
-
+    if (textarea.tagName !== 'TEXTAREA') {
+      return;
+    }
+    if (
+      !GM_getValue(
+        CONFIG.autogrow.enabledKey,
+        CONFIG.autogrow.enabledDefault
+      )
+    ) {
+      return;
+    }
     textarea.style.overflowY = 'hidden';
     textarea.style.resize = 'none';
-
     function resize() {
       textarea.style.height = 'auto';
       textarea.style.height = textarea.scrollHeight + 'px';
     }
-
     resize();
     textarea.addEventListener('input', resize);
-
-    // 初期レイアウト確定後に上端を固定
     requestAnimationFrame(() => pinPopupTop(textarea));
   }
-
   function processComposeBoxes(root = document) {
     const els = collectMatching(root, CONFIG.translate.composeSelector);
-
     els.forEach((el) => {
-      if (el.dataset.ttComposeDone) return;
+      if (el.dataset.ttComposeDone) {
+        return;
+      }
       el.dataset.ttComposeDone = '1';
-      
-      // テキストエリアの自動拡大機能を有効化
       if (el.tagName === 'TEXTAREA') {
         autoGrowTextarea(el);
       }
-
       const btn = document.createElement('div');
       btn.className = 'tt-compose-btn';
       btn.dataset.ttState = 'idle';
       updateComposeBtnLabel(btn);
-
+      const gifBtn = document.createElement('div');
+      gifBtn.className = 'tt-gif-btn';
+      gifBtn.textContent = 'GIF';
+      gifBtn.title = 'Search and attach GIFs (Tenor)';
+      updateGifBtnVisibility(gifBtn);
+      gifBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        openGifPicker(el);
+      });
       let resultEl = null;
-
       btn.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
-
-        if (translateLangSetting.get() === CONFIG.translate.noneValue) return;
-
+        if (translateLangSetting.get() === CONFIG.translate.noneValue) {
+          return;
+        }
         const text = getComposeText(el).trim();
         if (!text) return;
-
         btn.dataset.ttState = 'loading';
         updateComposeBtnLabel(btn);
         const lang = translateLangSetting.get();
-
         callTranslateApi(
           text,
           lang,
@@ -1819,191 +2580,25 @@
           }
         );
       });
-
-      // アクションバーを探す
       const actionBar = findActionBar(el);
-      
       if (actionBar) {
-        // TL内: アクションバー内に統合（ボタングループと同行）
         const firstChild = actionBar.firstElementChild;
         if (firstChild) {
+          firstChild.insertAdjacentElement('beforebegin', gifBtn);
           firstChild.insertAdjacentElement('beforebegin', btn);
         } else {
+          actionBar.appendChild(gifBtn);
           actionBar.appendChild(btn);
         }
       } else {
-        // ポップアップ内またはアクションバーが見つからない場合: compose 直下
+        el.insertAdjacentElement('afterend', gifBtn);
         el.insertAdjacentElement('afterend', btn);
       }
     });
   }
-
-  // ============================================================
-  // 複数画像のスワイプギャラリー
-
-
-  function findGalleryImages(article) {
-    // "Attached media" のimgを複数含むグリッドを探す(単一画像は対象外)
-    const imgs = Array.from(article.querySelectorAll('img[alt="Attached media"]'));
-    return imgs.length >= 2 ? imgs : [];
-  }
-
-  function openGallery(images, startIndex) {
-    let index = startIndex;
-
-    const overlay = document.createElement('div');
-    overlay.id = 'tweetapp-gallery-overlay';
-
-    const track = document.createElement('div');
-    track.id = 'tweetapp-gallery-track';
-
-    images.forEach((src) => {
-      const slide = document.createElement('div');
-      slide.className = 'tweetapp-gallery-slide';
-      const img = document.createElement('img');
-      img.src = src;
-      slide.appendChild(img);
-      track.appendChild(slide);
-    });
-
-    const closeBtn = document.createElement('button');
-    closeBtn.id = 'tweetapp-gallery-close';
-    closeBtn.type = 'button';
-    closeBtn.textContent = '✕';
-    closeBtn.addEventListener('click', () => overlay.remove());
-
-    const counter = document.createElement('div');
-    counter.id = 'tweetapp-gallery-counter';
-
-    const prevBtn = document.createElement('button');
-    prevBtn.id = 'tweetapp-gallery-prev';
-    prevBtn.className = 'tweetapp-gallery-arrow';
-    prevBtn.type = 'button';
-    prevBtn.textContent = '‹';
-
-    const nextBtn = document.createElement('button');
-    nextBtn.id = 'tweetapp-gallery-next';
-    nextBtn.className = 'tweetapp-gallery-arrow';
-    nextBtn.type = 'button';
-    nextBtn.textContent = '›';
-
-    function render(withTransition) {
-      track.classList.toggle('tweetapp-gallery-no-transition', !withTransition);
-      track.style.transform = `translateX(-${index * 100}%)`;
-      counter.textContent = `${index + 1} / ${images.length}`;
-      prevBtn.style.visibility = index === 0 ? 'hidden' : 'visible';
-      nextBtn.style.visibility = index === images.length - 1 ? 'hidden' : 'visible';
-    }
-
-    function goTo(newIndex, withTransition = true) {
-      index = Math.max(0, Math.min(images.length - 1, newIndex));
-      render(withTransition);
-    }
-
-    prevBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      goTo(index - 1);
-    });
-    nextBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      goTo(index + 1);
-    });
-
-    // スワイプ操作
-    let startX = 0;
-    let currentX = 0;
-    let dragging = false;
-
-    track.addEventListener('pointerdown', (e) => {
-      dragging = true;
-      startX = e.clientX;
-      currentX = e.clientX;
-      track.classList.add('tweetapp-gallery-no-transition');
-      track.setPointerCapture(e.pointerId);
-    });
-
-    track.addEventListener('pointermove', (e) => {
-      if (!dragging) return;
-      currentX = e.clientX;
-      const deltaPct = ((currentX - startX) / window.innerWidth) * 100;
-      track.style.transform = `translateX(calc(-${index * 100}% + ${deltaPct}%))`;
-    });
-
-    function endDrag() {
-      if (!dragging) return;
-      dragging = false;
-      const deltaX = currentX - startX;
-      const threshold = window.innerWidth * 0.15;
-      if (deltaX > threshold && index > 0) {
-        goTo(index - 1);
-      } else if (deltaX < -threshold && index < images.length - 1) {
-        goTo(index + 1);
-      } else {
-        goTo(index);
-      }
-    }
-
-    track.addEventListener('pointerup', endDrag);
-    track.addEventListener('pointercancel', endDrag);
-
-    overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) overlay.remove();
-    });
-
-    function handleKeydown(e) {
-      if (e.key === 'ArrowLeft') goTo(index - 1);
-      else if (e.key === 'ArrowRight') goTo(index + 1);
-      else if (e.key === 'Escape') overlay.remove();
-    }
-    document.addEventListener('keydown', handleKeydown);
-
-    const cleanupObserver = new MutationObserver(() => {
-      if (!document.body.contains(overlay)) {
-        document.removeEventListener('keydown', handleKeydown);
-        cleanupObserver.disconnect();
-      }
-    });
-    cleanupObserver.observe(document.body, { childList: true });
-
-    overlay.appendChild(track);
-    overlay.appendChild(closeBtn);
-    overlay.appendChild(counter);
-    overlay.appendChild(prevBtn);
-    overlay.appendChild(nextBtn);
-    document.body.appendChild(overlay);
-
-    goTo(index, false);
-  }
-
-  function attachGalleryHandlers(article) {
-    if (article.dataset.ttGalleryDone) return;
-
-    const imgs = findGalleryImages(article);
-    if (imgs.length === 0) return;
-
-    article.dataset.ttGalleryDone = '1';
-    const srcs = imgs.map((img) => img.src);
-
-    imgs.forEach((img, i) => {
-      img.addEventListener('click', (e) => {
-        if (!galleryEnabledSetting.get()) return;
-        e.preventDefault();
-        e.stopPropagation();
-        openGallery(srcs, i);
-      }, true);
-    });
-  }
-
-  function processGalleryArticles(root = document) {
-    const articles = collectMatching(root, 'article');
-    articles.forEach(attachGalleryHandlers);
-  }
-
   // ============================================================
   // リポスト非表示フィルター
-
   function isRepostedArticle(article) {
-    // articleの直下の span タグで "reposted" の表記を検索
     const spans = article.querySelectorAll(':scope span');
     for (const span of spans) {
       if (span.textContent.includes('reposted')) {
@@ -2012,10 +2607,10 @@
     }
     return false;
   }
-
   function applyHideRepostFilter(root = document) {
-    if (!hideRepostEnabledSetting.get()) return;
-
+    if (!hideRepostEnabledSetting.get()) {
+      return;
+    }
     const articles = collectMatching(root, 'article');
     articles.forEach((article) => {
       if (isRepostedArticle(article)) {
@@ -2023,102 +2618,99 @@
       }
     });
   }
-
-  function showAllArticles(root = document) {
-    const articles = collectMatching(root, 'article');
-    articles.forEach((article) => {
-      article.style.display = '';
-    });
-  }
-
   // ============================================================
   // インラインリプライ欄への@ハンドル自動入力
-
-  // aria-labelからハンドルを抽出するユーティリティ
   function extractHandleFromLabel(label) {
     const match = label.match(/^View @(.+?)(?:'s|'s) profile$/);
     return match ? match[1] : null;
   }
-
-  // textareaに対応するツイート投稿者ハンドルを取得する。
   function findHandleForTextarea(textarea) {
-    // 経路1: textarea が article 内にある場合 (旧来の構造)
     const article = textarea.closest('article');
     if (article) {
-      const btn = article.querySelector(':scope > div.flex.items-start.gap-3 > button[aria-label^="View @"]');
-      const handle = extractHandleFromLabel(btn?.getAttribute('aria-label') || '');
-      if (handle) return handle;
+      const btn = article.querySelector(
+        ':scope > div.flex.items-start.gap-3 > button[aria-label^="View @"]'
+      );
+      const handle = extractHandleFromLabel(
+        btn?.getAttribute('aria-label') || ''
+      );
+      if (handle) {
+        return handle;
+      }
     }
-
-    // 経路2: textarea が div[role="form"] 内にあり、その祖先に投稿者ボタンがある場合
     const form = textarea.closest('[role="form"]');
     if (form) {
-      // form の祖先を遡りながら "View @" ボタンを探す
       let el = form.parentElement;
       while (el && el !== document.body) {
         const btn = el.querySelector('button[aria-label^="View @"]');
         if (btn) {
-          const handle = extractHandleFromLabel(btn.getAttribute('aria-label') || '');
-          if (handle) return handle;
+          const handle = extractHandleFromLabel(
+            btn.getAttribute('aria-label')
+          );
+          if (handle) {
+            return handle;
+          }
         }
         el = el.parentElement;
       }
     }
-
     return null;
   }
-
   function prefillInlineReplyHandles(root = document) {
-    if (!replyPrefillEnabledSetting.get()) return;
-
+    if (!replyPrefillEnabledSetting.get()) {
+      return;
+    }
     const textareas =
       root instanceof HTMLTextAreaElement && root.name === 'compose-text'
         ? [root]
-        : Array.from(root.querySelectorAll?.('textarea[name="compose-text"]') || []);
-
+        : Array.from(
+            root.querySelectorAll?.('textarea[name="compose-text"]') || []
+          );
     textareas.forEach((textarea) => {
-      if (textarea.dataset.ttPrefillDone) return;
-
+      if (textarea.dataset.ttPrefillDone) {
+        return;
+      }
       const handle = findHandleForTextarea(textarea);
       if (!handle) return;
-
       textarea.dataset.ttPrefillDone = '1';
-      if (textarea.value.trim() !== '') return;
-
+      if (textarea.value.trim() !== '') {
+        return;
+      }
       const nativeSetter = Object.getOwnPropertyDescriptor(
         window.HTMLTextAreaElement.prototype,
         'value'
       ).set;
       nativeSetter.call(textarea, `@${handle} `);
       textarea.dispatchEvent(new Event('input', { bubbles: true }));
-      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+      textarea.setSelectionRange(
+        textarea.value.length,
+        textarea.value.length
+      );
     });
   }
-
   // ============================================================
-  // DOM監視（最適化）
-
+  // DOM監視
   function handleAddedNode(node) {
-    if (node.nodeType !== 1) return;
-
-    if (node.matches?.('article')) processArticle(node);
+    if (node.nodeType !== 1) {
+      return;
+    }
+    // 記事内部だけが再描画された場合(カードが消えた場合など)にも対応
+    const parentArticle = node.closest?.('article');
+    if (parentArticle) {
+      processArticle(parentArticle);
+    }
     node.querySelectorAll?.('article').forEach(processArticle);
-
     applyFontSizeToComposers(node);
     applyAutoplaySetting(node);
     processComposeBoxes(node);
-    processGalleryArticles(node);
     prefillInlineReplyHandles(node);
     applyHideRepostFilter(node);
     injectNavMenu();
   }
-
   function handleRouteChange() {
     applyStyles();
     applyHideRepostFilter();
     injectNavMenu();
   }
-
   function watchRouteChanges() {
     const origPushState = history.pushState;
     const origReplaceState = history.replaceState;
@@ -2130,29 +2722,31 @@
       origReplaceState.apply(this, args);
       setTimeout(handleRouteChange, 50);
     };
-    window.addEventListener('popstate', () => setTimeout(handleRouteChange, 50));
+    window.addEventListener('popstate', () =>
+      setTimeout(handleRouteChange, 50)
+    );
   }
-
   function startObserving() {
     const observer = new MutationObserver((mutations) => {
       for (const m of mutations) {
         m.addedNodes.forEach(handleAddedNode);
       }
     });
-
     observer.observe(document.body, {
       childList: true,
       subtree: true,
     });
   }
-
   // ============================================================
   // 初期化
-
   function init() {
     applyCustomCss();
     applyAvatarShape();
-    if (isComposeTabMode()) runComposeTabMode(); else interceptComposeClick();
+    if (isComposeTabMode()) {
+      runComposeTabMode();
+    } else {
+      interceptComposeClick();
+    }
     loadOgpCacheFromStorage();
     applyStyles();
     applyAutoplaySetting();
@@ -2161,13 +2755,18 @@
     watchRouteChanges();
     document.querySelectorAll('article').forEach(processArticle);
     processComposeBoxes();
-    processGalleryArticles();
     prefillInlineReplyHandles();
     injectNavMenu();
     startNotificationPolling();
-    // 描画遅延対策: navが後から現れても確実に挿入されるよう定期的に再試行(挿入済みなら何もしない)
-    setInterval(() => { injectNavMenu(); checkSiteVersion(); processAbsoluteTimes(); }, 1000);
-
+    setInterval(() => {
+      injectNavMenu();
+      checkSiteVersion();
+      processAbsoluteTimes();
+      // リンクカードの取りこぼし・再描画で消えた分を補う
+      if (linkCardEnabledSetting.get()) {
+        document.querySelectorAll('article').forEach(processArticle);
+      }
+    }, 1000);
     requestAnimationFrame(() => {
       applyStyles();
       applyAutoplaySetting();
@@ -2179,11 +2778,13 @@
       applyHideRepostFilter();
     }, 500);
   }
-
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init, { once: true });
+    document.addEventListener('DOMContentLoaded', init, {
+      once: true,
+    });
   } else {
     init();
   }
+
   } // end runContentScript
 })();
