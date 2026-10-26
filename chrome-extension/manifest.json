@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Tweet.app Enhancer",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "description": "Zoom, widths, link cards, translation, Tenor GIF search, notifications and more for app.tweet.app.",
   "permissions": [
     "storage"
