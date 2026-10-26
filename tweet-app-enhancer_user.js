@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tweet.app Enhancer
 // @namespace    https://imgd.net/
-// @version      2.3.0
+// @version      2.4.0
 // @description  Enhances app.tweet.app: zoom and content width, avatar shape, time stamps, always-visible composer, compose translation, in-app Tenor GIF search, compose in a new window, reply @handle prefill, OGP link cards, video/GIF autoplay, hide reposts and games, notification popup with sounds, update notice, and custom CSS. All settings are in the Enhancer menu in the sidebar.
 // @license      MIT
 // @match        https://app.tweet.app/*
@@ -17,6 +17,10 @@
   // ============================================================
   // CONFIG
   const CONFIG = {
+    displayName: {
+      enabledKey: 'tweetapp_display_name_enabled',
+      enabledDefault: false,
+    },
     avatarShape: {
       key: 'tweetapp_avatar_shape',
       default: 'circle',
@@ -152,6 +156,7 @@
   const timeEnabledSetting = createSetting(CONFIG.timeDisplay.enabledKey, CONFIG.timeDisplay.enabledDefault, () => {});
   const composeTabSetting = createSetting(CONFIG.composeTab.enabledKey, CONFIG.composeTab.enabledDefault, () => {});
   const avatarShapeSetting = createSetting(CONFIG.avatarShape.key, CONFIG.avatarShape.default, () => {});
+  const displayNameEnabledSetting = createSetting(CONFIG.displayName.enabledKey, CONFIG.displayName.enabledDefault, () => applyDisplayNames(document));
   const hideRepostEnabledSetting = createSetting(CONFIG.hideRepost.enabledKey, CONFIG.hideRepost.enabledDefault, () => applyHideRepostFilter());
   const hideGamesEnabledSetting = createSetting(CONFIG.hideGames.enabledKey, CONFIG.hideGames.enabledDefault, () => applyStyles());
   const notificationToastEnabledSetting = createSetting(CONFIG.notificationToast.enabledKey, CONFIG.notificationToast.enabledDefault, () => {});
@@ -1126,10 +1131,10 @@
   const AVATAR_SHAPE_CSS = {
     circle: '',
     rounded:
-      'img[alt$="avatar"], div.relative.inline-flex.shrink-0.isolate > button img[alt$="avatar"], div.relative.inline-flex.shrink-0.isolate > img[alt$="avatar"], div[role="form"] img[alt$="avatar"], button[aria-label="Open profile menu"] img[alt$="avatar"] { border-radius: 12px !important; }' +
+      'img[alt$="avatar"], div[role="img"][aria-label$="avatar placeholder"], div.relative.inline-flex.shrink-0.isolate > button img[alt$="avatar"], div.relative.inline-flex.shrink-0.isolate > img[alt$="avatar"], div[role="form"] img[alt$="avatar"], button[aria-label="Open profile menu"] img[alt$="avatar"] { border-radius: 12px !important; }' +
       'div.relative.inline-flex.shrink-0.isolate > button, button[aria-label="Open profile menu"] { border-radius: 12px !important; }',
     square:
-      'img[alt$="avatar"], div.relative.inline-flex.shrink-0.isolate > button img[alt$="avatar"], div.relative.inline-flex.shrink-0.isolate > img[alt$="avatar"], div[role="form"] img[alt$="avatar"], button[aria-label="Open profile menu"] img[alt$="avatar"] { border-radius: 0 !important; }' +
+      'img[alt$="avatar"], div[role="img"][aria-label$="avatar placeholder"], div.relative.inline-flex.shrink-0.isolate > button img[alt$="avatar"], div.relative.inline-flex.shrink-0.isolate > img[alt$="avatar"], div[role="form"] img[alt$="avatar"], button[aria-label="Open profile menu"] img[alt$="avatar"] { border-radius: 0 !important; }' +
       'div.relative.inline-flex.shrink-0.isolate > button, button[aria-label="Open profile menu"] { border-radius: 0 !important; }',
   };
   function applyAvatarShape() {
@@ -1144,6 +1149,7 @@
   const SETTINGS_ORDER = [
     'Article & Compose zoom',
     'Avatar shape',
+    'Name and handle',
     'Content width',
     'Time stamp',
     'Time stamp format',
@@ -1441,6 +1447,14 @@
         'Time stamp format',
         'Format incl. brackets, e.g. 3h (2026-10-14 17:00:00). Empty = off',
         timeWrap
+      )
+    );
+    const displayNameToggle = createToggleControl(displayNameEnabledSetting, 'ON', 'OFF');
+    card.appendChild(
+      createSettingsRow(
+        'Name and handle',
+        'Show display name before @handle in tweet headers',
+        displayNameToggle.el
       )
     );
     const avatarShapeCtrl = createSelectControl(
@@ -2564,6 +2578,79 @@
   }
   // ============================================================
   // インラインリプライ欄への@ハンドル自動入力
+  // ============================================================
+  // 表示名 + @ハンドル表示
+  // 投稿ヘッダのハンドル(例: ritchieplace1996)を、アイコンの alt から得た表示名に置き換える
+  //   例: "Ritchie & Place Media @ritchieplace1996"(@の前はノーブレークスペース)
+  function findNameButton(article, handle) {
+    return (
+      Array.from(article.querySelectorAll('button')).find(
+        (b) =>
+          !b.closest('[aria-label^="View @"]') &&
+          (b.dataset.ttHandle === handle ||
+            (b.textContent.trim() === handle && b.classList.contains('font-bold')))
+      ) || null
+    );
+  }
+  // 「・」の区切り(select-none の span)を、名前ボタンの位置から探す
+  function findDotSeparator(nameBtn) {
+    let el = nameBtn.parentElement;
+    while (el && el.tagName !== 'ARTICLE') {
+      const dot = Array.from(el.children).find(
+        (c) => c.matches('span.select-none') && c.textContent.trim().length === 1
+      );
+      if (dot) return dot;
+      el = el.parentElement;
+    }
+    return null;
+  }
+  function removeDisplayNames() {
+    document.querySelectorAll('button[data-tt-handle]').forEach((b) => {
+      b.textContent = b.dataset.ttHandle;
+      delete b.dataset.ttHandle;
+    });
+    document.querySelectorAll('.tt-handle-label').forEach((el) => el.remove());
+  }
+  // 名前(現状の色・サイズ) / バッジ / 半角スペース / @userid(「・」と同じ色・サイズ) / ・ / 相対時間
+  function applyDisplayNames(root = document) {
+    if (!displayNameEnabledSetting.get()) {
+      removeDisplayNames();
+      return;
+    }
+    collectMatching(root, 'article').forEach((article) => {
+      const avatarBtn = article.querySelector('button[aria-label^="View @"]');
+      const handle = extractHandleFromLabel(
+        avatarBtn?.getAttribute('aria-label') || ''
+      );
+      const avatarText =
+        avatarBtn?.querySelector('img')?.getAttribute('alt') ||
+        avatarBtn?.querySelector('[role="img"]')?.getAttribute('aria-label') ||
+        '';
+      const name = avatarText.replace(/\s*avatar(?: placeholder)?$/i, '').trim();
+      if (!handle || !name) return;
+      const nameBtn = findNameButton(article, handle);
+      if (!nameBtn) return;
+      const dot = findDotSeparator(nameBtn);
+      if (!dot) return;
+      nameBtn.dataset.ttHandle = handle;
+      if (nameBtn.textContent !== name) {
+        nameBtn.textContent = name;
+      }
+      let label = article.querySelector('.tt-handle-label');
+      if (!label) {
+        label = document.createElement('span');
+        label.className = dot.className.replace(/\bselect-none\b/, '').trim() + ' tt-handle-label';
+        label.style.cssText = 'margin-left:0.25em;margin-right:0.25em;white-space:nowrap;';
+        dot.insertAdjacentElement('beforebegin', label);
+      } else if (label.nextElementSibling !== dot) {
+        dot.insertAdjacentElement('beforebegin', label);
+      }
+      const text = `@${handle}`;
+      if (label.textContent !== text) {
+        label.textContent = text;
+      }
+    });
+  }
   function extractHandleFromLabel(label) {
     const match = label.match(/^View @(.+?)(?:'s|'s) profile$/);
     return match ? match[1] : null;
@@ -2648,6 +2735,7 @@
     processComposeBoxes(node);
     prefillInlineReplyHandles(node);
     applyHideRepostFilter(node);
+    applyDisplayNames(node);
     injectNavMenu();
   }
   function handleRouteChange() {
@@ -2706,6 +2794,7 @@
       injectNavMenu();
       checkSiteVersion();
       processAbsoluteTimes();
+      applyDisplayNames();
       // リンクカードの取りこぼし・再描画で消えた分を補う
       if (linkCardEnabledSetting.get()) {
         document.querySelectorAll('article').forEach(processArticle);
